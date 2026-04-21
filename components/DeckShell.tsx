@@ -238,7 +238,7 @@ export function DeckShell({
         </nav>
 
         <div className="flex items-center gap-3">
-          <LevelBadge />
+          <Suspense fallback={null}><LevelBadge /></Suspense>
           <div data-role="rogue-banner" className="hidden" />
           <div
             className="w-8 h-8 rounded-full"
