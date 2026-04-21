@@ -1,0 +1,27 @@
+{
+  "plugins": [
+    "@typescript-eslint"
+  ],
+  "extends": [
+    "next/core-web-vitals"
+  ],
+  "rules": {
+    "no-restricted-syntax": [
+      "error",
+      {
+        "selector": "MemberExpression[object.object.name='process'][object.property.name='env'][property.name=/^(ANTHROPIC|OPENAI|GOOGLE|GROK)_API_KEY$/]",
+        "message": "Never read provider API keys from env. Call resolveAccount() from lib/accounts/resolve.ts instead."
+      }
+    ]
+  },
+  "overrides": [
+    {
+      "files": [
+        "lib/accounts/**"
+      ],
+      "rules": {
+        "no-restricted-syntax": "off"
+      }
+    }
+  ]
+}

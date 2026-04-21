@@ -4,9 +4,7 @@ import type { LLMProvider, Chunk } from "./types";
 export class AnthropicProvider implements LLMProvider {
   private client: Anthropic;
 
-  constructor() {
-    const apiKey = process.env.ANTHROPIC_API_KEY;
-    if (!apiKey) throw new Error("ANTHROPIC_API_KEY is not set");
+  constructor(apiKey: string) {
     this.client = new Anthropic({ apiKey });
   }
 
@@ -20,7 +18,6 @@ export class AnthropicProvider implements LLMProvider {
     let tokensIn = 0;
     let tokensOut = 0;
 
-    // Filter out system messages from messages array, use system param instead
     const messages = input.messages
       .filter((m) => m.role !== "system")
       .map((m) => ({ role: m.role as "user" | "assistant", content: m.content }));

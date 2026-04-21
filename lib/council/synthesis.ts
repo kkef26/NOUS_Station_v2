@@ -1,5 +1,6 @@
 import { getServiceClient } from "@/lib/supabase/server";
 import { getProvider } from "@/lib/llm";
+import { resolveAccount } from "@/lib/accounts/resolve";
 import { DEFAULT_PERSONALITY } from "./fallback";
 
 type SSEChunk =
@@ -21,14 +22,12 @@ export async function runSynthesis(
 
   if (!thread) throw new Error("Thread not found");
 
-  // Load all turns
   const { data: turns } = await db
     .from("boardroom_seat_turns")
     .select("*")
     .eq("thread_id", threadId)
     .order("turn_index", { ascending: true });
 
-  // Load chair personality
   const chairSlug = thread.chair_seat || "default";
   const { data: chairPersonality } = await db
     .from("personalities")
@@ -38,10 +37,16 @@ export async function runSynthesis(
     .single();
 
   const chair = chairPersonality || DEFAULT_PERSONALITY;
-  const provider = chair.default_provider || DEFAULT_PERSONALITY.default_provider;
+  const providerName = (chair.default_provider || DEFAULT_PERSONALITY.default_provider) as "anthropic" | "openai" | "google" | "xai";
   const model = chair.default_model || DEFAULT_PERSONALITY.default_model;
 
-  // Build messages
+  // Gate: resolve account for this provider
+  const resolved = await resolveAccount({ provider: providerName, purpose: "chat" });
+  if (!resolved.ok) {
+    emit({ event: "error", data: { message: `No enabled ${providerName} account. Open Settings → Accounts.` } });
+    throw new Error("no_enabled_account");
+  }
+
   const messages: Array<{ role: "user" | "assistant" | "system"; content: string }> = [];
   messages.push({ role: "user", content: `Topic: ${thread.topic}` });
 
@@ -56,8 +61,7 @@ export async function runSynthesis(
 
   const systemPrompt = `${chair.system_prompt}\n\nYou are the chair. Summarize the table's contributions in 3-5 bullets. Identify agreement, disagreement, and open questions. End with a Synthesis Statement (1-2 sentences). Do not speak as any individual seat.`;
 
-  // Stream
-  const llm = getProvider(provider as "anthropic" | "openai" | "google" | "xai");
+  const llm = getProvider(providerName, resolved.credential);
   let fullContent = "";
   let tokensIn = 0;
   let tokensOut = 0;
@@ -77,7 +81,6 @@ export async function runSynthesis(
     }
   }
 
-  // Insert synthesis turn
   const turnCount = (turns || []).length;
   const { data: insertedTurn } = await db
     .from("boardroom_seat_turns")
@@ -88,7 +91,7 @@ export async function runSynthesis(
       turn_index: turnCount,
       content: fullContent,
       silence: false,
-      provider,
+      provider: providerName,
       model,
       tokens_in: tokensIn,
       tokens_out: tokensOut,
@@ -99,7 +102,6 @@ export async function runSynthesis(
 
   const turnId = insertedTurn?.id || "unknown";
 
-  // Update thread
   await db
     .from("boardroom_threads")
     .update({ synthesis_message_id: turnId })

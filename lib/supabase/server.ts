@@ -18,7 +18,7 @@ export function getServiceClient(): SupabaseClient<any, "nous"> {
   cachedClient = createClient(SUPABASE_URL, key, {
     db: { schema: "nous" },
     auth: { persistSession: false },
-  });
+  }) as SupabaseClient<any, "nous">;
   cachedAt = now;
   return cachedClient;
 }

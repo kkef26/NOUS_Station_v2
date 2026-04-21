@@ -33,6 +33,11 @@ async function upsertPersonality(row) {
     body: JSON.stringify(row),
   });
 
+  // 409 = already exists with a conflicting unique key — treat as success
+  if (resp.status === 409) {
+    return null;
+  }
+
   if (!resp.ok) {
     const text = await resp.text();
     throw new Error(`${resp.status}: ${text}`);
@@ -54,7 +59,6 @@ async function main() {
     const raw = await readFile(filePath, "utf-8");
     const { data: front, content: body } = matter(raw);
 
-    // Validate required fields
     const missing = REQUIRED_FIELDS.filter((f) => !front[f]);
     if (missing.length > 0) {
       errors.push(`${file}: missing required fields: ${missing.join(", ")}`);
@@ -79,9 +83,14 @@ async function main() {
     };
 
     try {
-      await upsertPersonality(row);
-      synced++;
-      console.log(`  synced: ${front.slug} (${file})`);
+      const result = await upsertPersonality(row);
+      if (result === null) {
+        console.log(`  skipped (already exists): ${front.slug} (${file})`);
+        skipped++;
+      } else {
+        synced++;
+        console.log(`  synced: ${front.slug} (${file})`);
+      }
     } catch (err) {
       errors.push(`${file}: ${err.message}`);
       skipped++;
@@ -91,7 +100,7 @@ async function main() {
   console.log(`\nPersonality sync complete: ${synced} synced, ${skipped} skipped`);
 
   if (errors.length > 0) {
-    console.error("\nErrors:");
+    console.error("\nErrors (non-conflict):");
     errors.forEach((e) => console.error(`  ${e}`));
     process.exit(1);
   }

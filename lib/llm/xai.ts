@@ -4,9 +4,7 @@ export class XAIProvider implements LLMProvider {
   private apiKey: string;
   private baseUrl = "https://api.x.ai/v1/chat/completions";
 
-  constructor() {
-    const apiKey = process.env.GROK_API_KEY;
-    if (!apiKey) throw new Error("GROK_API_KEY is not set");
+  constructor(apiKey: string) {
     this.apiKey = apiKey;
   }
 
