@@ -75,6 +75,26 @@ function check(filePath, content) {
     ) {
       VIOLATIONS.push(`${rel}:${lineNum} — "grid-cols-3" in marketing-style layout`);
     }
+
+    // 6. Brain emoji in any file (Bite 2 extension)
+    if (line.includes("\u{1F9E0}")) {
+      VIOLATIONS.push(`${rel}:${lineNum} — brain emoji in file`);
+    }
+
+    // 7. AI-cliche gradient
+    if (/bg-gradient-to-br\s+from-.+-500/.test(line)) {
+      VIOLATIONS.push(`${rel}:${lineNum} — AI-cliche gradient pattern`);
+    }
+
+    // 8. animate-pulse in Brain/Synapse components
+    if ((name.startsWith("brain") || name.startsWith("synapse")) && /animate-pulse/.test(line)) {
+      VIOLATIONS.push(`${rel}:${lineNum} — animate-pulse in Brain/Synapse component`);
+    }
+
+    // 9. Literal "mac-dots"
+    if (/"mac-dots"/.test(line)) {
+      VIOLATIONS.push(`${rel}:${lineNum} — literal "mac-dots" string`);
+    }
   });
 }
 

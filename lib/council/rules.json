@@ -1,0 +1,10 @@
+{
+  "architect|design|system": ["strata"],
+  "bug|test|break|stress": ["gauntlet"],
+  "prospect|customer|market": ["scout"],
+  "ethics|safety|harm": ["sentinel", "ethicist"],
+  "teach|explain|learn": ["teacher"],
+  "money|account|cost|revenue": ["ledger"],
+  "roadmap|product|strategy": ["navigator"],
+  "history|recall|what happened": ["atlas", "relay"]
+}
