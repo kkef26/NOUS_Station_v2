@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { getNousUrl, getNousKey } from "@/lib/supabase/server";
 
+export const dynamic = "force-dynamic";
+
 export async function GET() {
   try {
     const nousUrl = getNousUrl();

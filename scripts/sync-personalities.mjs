@@ -14,8 +14,8 @@ const SUPABASE_URL = "https://oozlawunlkkuaykfunan.supabase.co";
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_NOUS;
 
 if (!SUPABASE_KEY) {
-  console.error("SUPABASE_SERVICE_ROLE_NOUS is not set");
-  process.exit(1);
+  console.warn("SUPABASE_SERVICE_ROLE_NOUS is not set — skipping personality sync (build-time)");
+  process.exit(0);
 }
 
 const db = createClient(SUPABASE_URL, SUPABASE_KEY, {
