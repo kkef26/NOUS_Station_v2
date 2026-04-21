@@ -1,0 +1,101 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ═══════════════════════════════════════════
+   NOUS Station v2 — Dual-theme CSS tokens
+   NST.19.7 r3 §12 Dark (Brainwork4 navy+teal)
+   + §12 Light (warm-paper ~4500K)
+   ═══════════════════════════════════════════ */
+
+:root {
+  /* Dark theme (default) — Brainwork4 navy+teal */
+  --bg-0: #0a1a2f;
+  --bg-1: #132744;
+  --bg-2: #1b3358;
+  --ink-0: #e6eef7;
+  --ink-1: #b4c4d6;
+  --accent-teal: #3ad6c4;
+  --accent-teal-dim: #1f8478;
+  --rogue: #ff6b5a;
+  --breath: 4s;
+  --pulse: 200ms;
+  --scrim: rgba(10, 26, 47, 0.6);
+}
+
+[data-theme="light"] {
+  /* Light theme — warm-paper ~4500K */
+  --bg-0: #f7f2e8;
+  --bg-1: #efe8d8;
+  --bg-2: #e5dcc5;
+  --ink-0: #2a2418;
+  --ink-1: #5a5040;
+  --accent-teal: #1f8478;
+  --accent-teal-dim: #5fa8a0;
+  --rogue: #d4543e;
+  --scrim: rgba(42, 36, 24, 0.4);
+}
+
+/* ═══════════════════════════════════════════
+   Living-system baseline — §16
+   ═══════════════════════════════════════════ */
+
+@keyframes breathe {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.98; }
+}
+.breathing {
+  animation: breathe var(--breath) ease-in-out infinite;
+}
+
+@keyframes pulse-once {
+  0% { transform: scale(1); }
+  50% { transform: scale(1.04); }
+  100% { transform: scale(1); }
+}
+.pulse {
+  animation: pulse-once var(--pulse) ease-out;
+}
+
+/* ═══════════════════════════════════════════
+   Base styles
+   ═══════════════════════════════════════════ */
+
+html {
+  color-scheme: dark;
+}
+
+[data-theme="light"] {
+  color-scheme: light;
+}
+
+body {
+  background: var(--bg-0);
+  color: var(--ink-0);
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Drawer spring-out animation */
+@keyframes slide-up {
+  from { transform: translateY(100%); }
+  to { transform: translateY(0); }
+}
+@keyframes slide-down {
+  from { transform: translateY(-100%); }
+  to { transform: translateY(0); }
+}
+
+.drawer-bottom-enter {
+  animation: slide-up 0.35s cubic-bezier(0.32, 0.72, 0, 1);
+}
+.drawer-top-enter {
+  animation: slide-down 0.35s cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+/* Scrim overlay */
+.scrim {
+  background: var(--scrim);
+  backdrop-filter: blur(4px);
+}
