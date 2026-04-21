@@ -14,8 +14,7 @@
   "overrides": [
     {
       "files": [
-        "lib/accounts/**/*.ts",
-        "lib/accounts/**/*.tsx"
+        "lib/accounts/**"
       ],
       "rules": {
         "no-restricted-syntax": "off"

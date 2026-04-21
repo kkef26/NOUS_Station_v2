@@ -49,7 +49,9 @@ export async function resolveAccount(input: ResolveInput): Promise<ResolveOutput
       .from("accounts")
       .select("provider")
       .eq("provider", input.provider);
-    const providers_eligible = anyRows ? [...new Set(anyRows.map((r) => r.provider))] : [];
+    const providers_eligible = anyRows
+      ? Array.from(new Set(anyRows.map((r) => r.provider)))
+      : [];
 
     await db.from("account_usage_events").insert({
       event_type: "gate_blocked",
