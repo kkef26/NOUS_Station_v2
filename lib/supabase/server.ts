@@ -1,12 +1,14 @@
-import { createClient, SupabaseClient } from "@supabase/supabase-js";
+import { createClient } from "@supabase/supabase-js";
 
 const SUPABASE_URL = "https://oozlawunlkkuaykfunan.supabase.co";
 
-let cachedClient: SupabaseClient | null = null;
+type ServiceClient = ReturnType<typeof createClient>;
+
+let cachedClient: ServiceClient | null = null;
 let cachedAt = 0;
 const CACHE_TTL = 10 * 60 * 1000; // 10 minutes
 
-export function getServiceClient(): SupabaseClient {
+export function getServiceClient(): ServiceClient {
   const now = Date.now();
   if (cachedClient && now - cachedAt < CACHE_TTL) return cachedClient;
 
