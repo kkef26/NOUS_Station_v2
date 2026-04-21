@@ -11,8 +11,13 @@ type Account = {
   enabled: boolean;
   priority: number;
   capabilities: Record<string, boolean>;
+  capability_tier: "senior" | "mid" | "junior";
   notes: string | null;
   last_used_at: string | null;
+  rate_limit_remaining: { tokens_remaining?: number; requests_remaining?: number; reset_at?: string } | null;
+  rate_limited_until: string | null;
+  status_reason: string | null;
+  status_source: string | null;
 };
 
 const PROVIDER_LABELS: Record<string, string> = {
@@ -30,6 +35,73 @@ const AUTH_TYPE_LABELS: Record<string, string> = {
   station_proxy: "Proxy",
 };
 
+const TIER_LABELS: Record<string, string> = {
+  senior: "Senior",
+  mid: "Mid",
+  junior: "Junior",
+};
+
+function StatusBadge({ account }: { account: Account }) {
+  const now = Date.now();
+  const rateLimitedUntil = account.rate_limited_until ? new Date(account.rate_limited_until).getTime() : 0;
+  const isRateLimited = account.status === "rate_limited" && rateLimitedUntil > now;
+  const resetInMs = rateLimitedUntil - now;
+  const resetMinutes = Math.ceil(resetInMs / 60000);
+
+  if (!account.enabled) {
+    return <span title="Disabled" style={{ fontSize: "0.7rem" }}>&#9898; disabled</span>;
+  }
+
+  switch (account.status) {
+    case "connected":
+      return <span title="Connected" style={{ color: "var(--accent-teal)", fontSize: "0.7rem" }}>&#9899; connected</span>;
+    case "degraded":
+      return <span title={account.status_reason || "Degraded"} style={{ color: "#eab308", fontSize: "0.7rem" }}>&#9899; degraded</span>;
+    case "provider_down":
+      return <span title={account.status_reason || "Provider down"} style={{ color: "var(--rogue)", fontSize: "0.7rem" }}>&#9899; provider down</span>;
+    case "rate_limited":
+      return (
+        <span title={`Rate limited${isRateLimited ? ` — resets in ${resetMinutes}m` : ""}`} style={{ color: "#a855f7", fontSize: "0.7rem" }}>
+          &#9208; rate limited{isRateLimited && ` (${resetMinutes}m)`}
+        </span>
+      );
+    case "expired":
+      return <span title="Credential expired" style={{ color: "var(--rogue)", fontSize: "0.7rem" }}>&#9899; expired</span>;
+    case "error":
+    case "disconnected":
+      return <span title={account.status} style={{ color: "var(--rogue)", fontSize: "0.7rem" }}>&#9899; {account.status}</span>;
+    default:
+      return <span style={{ fontSize: "0.7rem" }}>&#9898; {account.status}</span>;
+  }
+}
+
+function RateLimitInfo({ account }: { account: Account }) {
+  if (!account.rate_limit_remaining) return null;
+  const rl = account.rate_limit_remaining;
+  if (!rl.tokens_remaining && !rl.requests_remaining) return null;
+
+  const parts: string[] = [];
+  if (rl.tokens_remaining !== undefined) {
+    const k = Math.round(rl.tokens_remaining / 1000);
+    parts.push(`${k}K tokens remaining`);
+  }
+  if (rl.requests_remaining !== undefined) {
+    parts.push(`${rl.requests_remaining} req remaining`);
+  }
+  if (rl.reset_at) {
+    const resetDate = new Date(rl.reset_at);
+    const now = Date.now();
+    const diffMin = Math.ceil((resetDate.getTime() - now) / 60000);
+    if (diffMin > 0) parts.push(`resets in ${diffMin}m`);
+  }
+
+  return (
+    <div style={{ color: "var(--ink-1)", fontSize: "0.7rem", marginTop: "0.25rem", paddingLeft: "1.5rem" }}>
+      {parts.join(", ")}
+    </div>
+  );
+}
+
 export default function AccountsPage() {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [loading, setLoading] = useState(true);
@@ -39,6 +111,7 @@ export default function AccountsPage() {
   const [newAuthType, setNewAuthType] = useState("");
   const [newLabel, setNewLabel] = useState("");
   const [newCredential, setNewCredential] = useState("");
+  const [newTier, setNewTier] = useState<"senior" | "mid" | "junior">("mid");
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
@@ -88,6 +161,20 @@ export default function AccountsPage() {
     }
   };
 
+  const changeTier = async (account: Account, tier: "senior" | "mid" | "junior") => {
+    const res = await fetch(`/api/accounts/${account.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ capability_tier: tier }),
+    });
+    if (res.ok) {
+      setAccounts((prev) =>
+        prev.map((a) => (a.id === account.id ? { ...a, capability_tier: tier } : a))
+      );
+      showToast(`${account.display_label} tier set to ${TIER_LABELS[tier]}`);
+    }
+  };
+
   const disconnect = async (account: Account) => {
     if (!confirm(`Disconnect ${account.display_label}? This will null the stored credential.`)) return;
     const res = await fetch(`/api/accounts/${account.id}/disconnect`, { method: "POST" });
@@ -113,6 +200,7 @@ export default function AccountsPage() {
       provider: newProvider,
       auth_type: newAuthType,
       display_label: newLabel || `${PROVIDER_LABELS[newProvider] || newProvider} (${AUTH_TYPE_LABELS[newAuthType] || newAuthType})`,
+      capability_tier: newTier,
     };
     if (newAuthType === "api_key") body.credential = newCredential;
 
@@ -130,6 +218,7 @@ export default function AccountsPage() {
       setNewAuthType("");
       setNewLabel("");
       setNewCredential("");
+      setNewTier("mid");
       fetchAccounts();
       showToast("Account added. Toggle it on to activate.");
     } else {
@@ -145,14 +234,6 @@ export default function AccountsPage() {
     station_proxy: ["station_proxy"],
   };
 
-  const statusDot = (account: Account) => {
-    if (account.status === "disconnected" || account.status === "error") {
-      return "bg-red-500";
-    }
-    if (account.enabled) return "bg-green-500";
-    return "bg-gray-400";
-  };
-
   return (
     <div style={{ background: "var(--bg-0)", color: "var(--ink-0)", minHeight: "100vh", padding: "2rem" }}>
       {toast && (
@@ -166,12 +247,12 @@ export default function AccountsPage() {
         </div>
       )}
 
-      <div style={{ maxWidth: "640px", margin: "0 auto" }}>
+      <div style={{ maxWidth: "700px", margin: "0 auto" }}>
         <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: "2rem" }}>
           <div>
             <h1 style={{ fontSize: "1.5rem", fontWeight: 600, margin: 0 }}>Accounts</h1>
             <p style={{ color: "var(--ink-1)", margin: "0.25rem 0 0", fontSize: "0.875rem" }}>
-              Your LLM sources. Disabled = silent, not disconnected.
+              Your LLM sources. Tier-matched fallback chains route requests to peer providers on outage.
             </p>
           </div>
           <button
@@ -201,13 +282,21 @@ export default function AccountsPage() {
                 <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
                   <div style={{
                     width: "10px", height: "10px", borderRadius: "50%",
-                    background: account.status === "disconnected" || account.status === "error"
-                      ? "var(--rogue)" : account.enabled ? "var(--accent-teal)" : "var(--ink-1)",
+                    background:
+                      account.status === "provider_down" || account.status === "disconnected" || account.status === "error" || account.status === "expired"
+                        ? "var(--rogue)"
+                        : account.status === "degraded"
+                          ? "#eab308"
+                          : account.status === "rate_limited"
+                            ? "#a855f7"
+                            : account.enabled
+                              ? "var(--accent-teal)"
+                              : "var(--ink-1)",
                     flexShrink: 0,
                   }} />
                   <div style={{ flex: 1 }}>
                     <div style={{ fontWeight: 600, fontSize: "0.9rem" }}>{account.display_label}</div>
-                    <div style={{ color: "var(--ink-1)", fontSize: "0.75rem", marginTop: "0.125rem" }}>
+                    <div style={{ color: "var(--ink-1)", fontSize: "0.75rem", marginTop: "0.125rem", display: "flex", gap: "0.5rem", alignItems: "center", flexWrap: "wrap" }}>
                       {PROVIDER_LABELS[account.provider] || account.provider}
                       {" · "}
                       <span style={{
@@ -216,8 +305,26 @@ export default function AccountsPage() {
                       }}>
                         {AUTH_TYPE_LABELS[account.auth_type] || account.auth_type}
                       </span>
+                      {" · "}
+                      <StatusBadge account={account} />
                     </div>
                   </div>
+
+                  {/* Tier dropdown */}
+                  <select
+                    value={account.capability_tier}
+                    onChange={(e) => changeTier(account, e.target.value as "senior" | "mid" | "junior")}
+                    style={{
+                      background: "var(--bg-2)", border: "1px solid var(--bg-2)",
+                      borderRadius: "0.25rem", color: "var(--ink-0)",
+                      fontFamily: "monospace", fontSize: "0.75rem",
+                      padding: "0.25rem 0.375rem", cursor: "pointer",
+                    }}
+                  >
+                    <option value="senior">Senior</option>
+                    <option value="mid">Mid</option>
+                    <option value="junior">Junior</option>
+                  </select>
 
                   {/* Priority arrows */}
                   <div style={{ display: "flex", flexDirection: "column", gap: "0.125rem" }}>
@@ -279,9 +386,17 @@ export default function AccountsPage() {
                   </details>
                 </div>
 
+                <RateLimitInfo account={account} />
+
                 {account.notes && (
                   <p style={{ color: "var(--ink-1)", fontSize: "0.75rem", margin: "0.5rem 0 0", paddingLeft: "1.5rem" }}>
                     {account.notes}
+                  </p>
+                )}
+
+                {account.status_reason && account.status !== "connected" && (
+                  <p style={{ color: "var(--ink-1)", fontSize: "0.7rem", margin: "0.25rem 0 0", paddingLeft: "1.5rem", fontStyle: "italic" }}>
+                    {account.status_reason}
                   </p>
                 )}
               </div>
@@ -374,6 +489,26 @@ export default function AccountsPage() {
                       fontFamily: "monospace", fontSize: "0.875rem", boxSizing: "border-box",
                     }}
                   />
+                </div>
+
+                <div style={{ marginBottom: "1rem" }}>
+                  <label style={{ display: "block", color: "var(--ink-1)", fontSize: "0.8rem", marginBottom: "0.25rem" }}>
+                    Capability Tier
+                  </label>
+                  <select
+                    value={newTier}
+                    onChange={(e) => setNewTier(e.target.value as "senior" | "mid" | "junior")}
+                    style={{
+                      width: "100%", padding: "0.5rem 0.75rem",
+                      background: "var(--bg-0)", border: "1px solid var(--bg-2)",
+                      borderRadius: "0.375rem", color: "var(--ink-0)",
+                      fontFamily: "monospace", fontSize: "0.875rem", boxSizing: "border-box",
+                    }}
+                  >
+                    <option value="senior">Senior (Opus, GPT-4o, Gemini Ultra, Grok-3)</option>
+                    <option value="mid">Mid (Sonnet, GPT-4, Gemini Pro)</option>
+                    <option value="junior">Junior (Haiku, Mini, Flash)</option>
+                  </select>
                 </div>
 
                 {(newAuthType === "api_key" || newAuthType === "oauth_max" || newAuthType === "oauth_pro") && (

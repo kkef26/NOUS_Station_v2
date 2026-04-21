@@ -1,0 +1,54 @@
+[
+  {
+    "id": "acct-senior-sub-1",
+    "provider": "anthropic",
+    "auth_type": "oauth_max",
+    "display_label": "Claude Max (Senior Sub)",
+    "status": "connected",
+    "enabled": true,
+    "priority": 10,
+    "credential_ref": "enc:sk-ant-sub-test-123",
+    "capabilities": {},
+    "capability_tier": "senior",
+    "rate_limited_until": null
+  },
+  {
+    "id": "acct-senior-api-1",
+    "provider": "anthropic",
+    "auth_type": "api_key",
+    "display_label": "Anthropic API (Senior API)",
+    "status": "connected",
+    "enabled": true,
+    "priority": 20,
+    "credential_ref": "enc:sk-ant-api-test-456",
+    "capabilities": {},
+    "capability_tier": "senior",
+    "rate_limited_until": null
+  },
+  {
+    "id": "acct-senior-openai-1",
+    "provider": "openai",
+    "auth_type": "api_key",
+    "display_label": "OpenAI API (Senior)",
+    "status": "connected",
+    "enabled": true,
+    "priority": 30,
+    "credential_ref": "enc:sk-openai-test-789",
+    "capabilities": {},
+    "capability_tier": "senior",
+    "rate_limited_until": null
+  },
+  {
+    "id": "acct-proxy-1",
+    "provider": "station_proxy",
+    "auth_type": "station_proxy",
+    "display_label": "Station Proxy (EC2)",
+    "status": "connected",
+    "enabled": true,
+    "priority": 50,
+    "credential_ref": null,
+    "capabilities": {},
+    "capability_tier": "senior",
+    "rate_limited_until": null
+  }
+]
