@@ -4,9 +4,7 @@ import type { LLMProvider, Chunk } from "./types";
 export class GoogleProvider implements LLMProvider {
   private client: GoogleGenAI;
 
-  constructor() {
-    const apiKey = process.env.GOOGLE_API_KEY;
-    if (!apiKey) throw new Error("GOOGLE_API_KEY is not set");
+  constructor(apiKey: string) {
     this.client = new GoogleGenAI({ apiKey });
   }
 
@@ -23,7 +21,7 @@ export class GoogleProvider implements LLMProvider {
     const contents = input.messages
       .filter((m) => m.role !== "system")
       .map((m) => ({
-        role: m.role === "assistant" ? "model" as const : "user" as const,
+        role: m.role === "assistant" ? ("model" as const) : ("user" as const),
         parts: [{ text: m.content }],
       }));
 

@@ -4,34 +4,25 @@ import { OpenAIProvider } from "./openai";
 import { GoogleProvider } from "./google";
 import { XAIProvider } from "./xai";
 
-export type ProviderName = "anthropic" | "openai" | "google" | "xai";
+export type ProviderName = "anthropic" | "openai" | "google" | "xai" | "station_proxy";
 
-const cache = new Map<ProviderName, LLMProvider>();
-
-export function getProvider(name: ProviderName): LLMProvider {
-  const cached = cache.get(name);
-  if (cached) return cached;
-
-  let provider: LLMProvider;
+/**
+ * Returns a provider instance initialized with the given credential.
+ * Credential must come from resolveAccount() — never from process.env directly.
+ */
+export function getProvider(name: ProviderName, credential: string): LLMProvider {
   switch (name) {
     case "anthropic":
-      provider = new AnthropicProvider();
-      break;
+      return new AnthropicProvider(credential);
     case "openai":
-      provider = new OpenAIProvider();
-      break;
+      return new OpenAIProvider(credential);
     case "google":
-      provider = new GoogleProvider();
-      break;
+      return new GoogleProvider(credential);
     case "xai":
-      provider = new XAIProvider();
-      break;
+      return new XAIProvider(credential);
     default:
       throw new Error(`Unknown provider: ${name}`);
   }
-
-  cache.set(name, provider);
-  return provider;
 }
 
 export type { Chunk, LLMProvider } from "./types";

@@ -4,9 +4,7 @@ import type { LLMProvider, Chunk } from "./types";
 export class OpenAIProvider implements LLMProvider {
   private client: OpenAI;
 
-  constructor() {
-    const apiKey = process.env.OPENAI_API_KEY;
-    if (!apiKey) throw new Error("OPENAI_API_KEY is not set");
+  constructor(apiKey: string) {
     this.client = new OpenAI({ apiKey });
   }
 
