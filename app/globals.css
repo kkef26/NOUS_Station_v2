@@ -6,6 +6,7 @@
    NOUS Station v2 — Dual-theme CSS tokens
    NST.19.7 r3 §12 Dark (Brainwork4 navy+teal)
    + §12 Light (warm-paper ~4500K)
+   + Design Soul color temperature (Bite 2.8)
    ═══════════════════════════════════════════ */
 
 :root {
@@ -21,6 +22,17 @@
   --breath: 4s;
   --pulse: 200ms;
   --scrim: rgba(10, 26, 47, 0.6);
+
+  /* System-state color temperature — NST.19.7 r3
+     Hue rotate applied to body; ≤10° total swing end-to-end.
+     calm=0° (navy baseline), working=2° teal tint,
+     stressed=6° amber bleed, overloaded=10° + desaturated red edge */
+  --bg-temp-hue: 0deg;
+  --bg-temp-saturate: 1;
+
+  /* Level visual gates */
+  --level-arc-cap: 1;
+  --level-gold-overtone: 0;
 }
 
 [data-theme="light"] {
@@ -37,15 +49,34 @@
 }
 
 /* ═══════════════════════════════════════════
-   Living-system baseline — §16
+   Living-system baseline — NST.19.7 r3 §16
+   Design Soul (Bite 2.8)
    ═══════════════════════════════════════════ */
 
+/* Ambient breathing — 4s cycle, ≤2% luminance swing,
+   matched to resting human respiration. Invisible
+   consciously, felt subconsciously. */
 @keyframes breathe {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.98; }
 }
 .breathing {
   animation: breathe var(--breath) ease-in-out infinite;
+}
+
+/* Respect prefers-reduced-motion */
+@media (prefers-reduced-motion: reduce) {
+  .breathing {
+    animation: none;
+  }
+  .pulse,
+  [data-pulse-active] {
+    animation: none !important;
+  }
+  .drawer-bottom-enter,
+  .drawer-top-enter {
+    animation: none;
+  }
 }
 
 @keyframes pulse-once {
@@ -55,6 +86,40 @@
 }
 .pulse {
   animation: pulse-once var(--pulse) ease-out;
+}
+
+/* Signal-driven pulse animations — NST.19.7 r3 */
+@keyframes pulse-dispatch-fire {
+  0% { box-shadow: 0 0 0 0 var(--accent-teal); }
+  50% { box-shadow: 0 0 8px 2px var(--accent-teal); }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+@keyframes pulse-worker-complete {
+  0% { background-color: var(--accent-teal); }
+  100% { background-color: var(--bg-1); }
+}
+@keyframes pulse-clause-ship {
+  0% { box-shadow: 0 0 0 0 #b8a54c; }
+  50% { box-shadow: 0 0 6px 2px #b8a54c; }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+@keyframes pulse-rogue-trip {
+  0% { box-shadow: inset 0 0 0 2px var(--rogue); }
+  70% { box-shadow: inset 0 0 0 2px var(--rogue); }
+  100% { box-shadow: inset 0 0 0 0 transparent; }
+}
+
+[data-pulse="dispatch-fire"] {
+  animation: pulse-dispatch-fire 400ms ease-out;
+}
+[data-pulse="worker-complete"] {
+  animation: pulse-worker-complete 600ms ease-out;
+}
+[data-pulse="clause-ship"] {
+  animation: pulse-clause-ship 500ms ease-out;
+}
+[data-pulse="rogue-trip"] {
+  animation: pulse-rogue-trip 2s ease-out;
 }
 
 /* ═══════════════════════════════════════════
@@ -75,6 +140,9 @@ body {
   font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  /* System-state color temperature filter */
+  filter: hue-rotate(var(--bg-temp-hue)) saturate(var(--bg-temp-saturate));
+  transition: filter 500ms ease-out;
 }
 
 /* Drawer spring-out animation */
@@ -98,6 +166,15 @@ body {
 @keyframes streaming-breath {
   0%, 100% { border-color: var(--accent-teal); }
   50% { border-color: var(--accent-teal-dim); }
+}
+
+/* Connectivity arcs SVG overlay */
+.connectivity-arcs-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  overflow: hidden;
 }
 
 /* Scrim overlay */

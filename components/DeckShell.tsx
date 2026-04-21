@@ -2,11 +2,14 @@
 
 import { usePathname, useRouter } from "next/navigation";
 import { useState, useEffect, useCallback, useRef } from "react";
+import { Suspense } from "react";
 import { PulseDrawer } from "./drawers/PulseDrawer";
 import { FactoryDrawer } from "./drawers/FactoryDrawer";
 import { FleetDrawer } from "./drawers/FleetDrawer";
 import { SignalsDrawer } from "./drawers/SignalsDrawer";
 import { HybridComposer } from "./HybridComposer";
+import { DesignSoulProvider } from "./DesignSoulProvider";
+import { LevelBadge } from "./LevelBadge";
 
 const SURFACES = [
   { label: "Chat", href: "/chat" },
@@ -186,12 +189,17 @@ export function DeckShell({
 
   return (
     <div className="min-h-screen flex flex-col" style={{ background: "var(--bg-0)" }}>
+      {/* Design Soul substrate — arcs overlay + event listeners */}
+      <Suspense fallback={null}>
+        <DesignSoulProvider />
+      </Suspense>
+
       {/* ─── Top bar (56px) ─── */}
       <header
         className="h-14 flex items-center justify-between px-4 shrink-0 border-b"
         style={{ background: "var(--bg-1)", borderColor: "var(--bg-2)" }}
       >
-        <div className="breathing flex items-center gap-2">
+        <div className="breathing flex items-center gap-2" data-soul-anchor="dispatch">
           <svg
             width="28"
             height="28"
@@ -212,12 +220,13 @@ export function DeckShell({
           </span>
         </div>
 
-        <nav className="flex gap-1">
+        <nav className="flex gap-1" data-soul-anchor="clause">
           {SURFACES.map((s) => (
             <button
               key={s.href}
               onClick={() => router.push(s.href)}
               className="px-3 py-1.5 text-sm rounded-full transition-colors"
+              data-soul-target="rail-chip"
               style={{
                 background: activeSurface(s.href) ? "var(--accent-teal)" : "transparent",
                 color: activeSurface(s.href) ? "var(--bg-0)" : "var(--ink-1)",
@@ -229,6 +238,7 @@ export function DeckShell({
         </nav>
 
         <div className="flex items-center gap-3">
+          <LevelBadge />
           <div data-role="rogue-banner" className="hidden" />
           <div
             className="w-8 h-8 rounded-full"
@@ -243,22 +253,26 @@ export function DeckShell({
         onClick={() => toggleDrawer("pulse")}
         className="w-full h-6 flex items-center justify-center text-xs shrink-0 hover:opacity-80 transition-opacity"
         style={{ background: "var(--bg-1)", color: "var(--ink-1)" }}
+        data-soul-target="queue-cell"
+        data-soul-anchor="signal"
       >
         Pulse ⌘P
       </button>
 
       {/* Main content */}
-      <main className="flex-1 overflow-auto">{children}</main>
+      <main className="flex-1 overflow-auto" data-soul-anchor="project">{children}</main>
 
       {/* Bottom edge */}
       <div
         className="h-6 flex items-center justify-center gap-6 text-xs shrink-0"
         style={{ background: "var(--bg-1)", color: "var(--ink-1)" }}
+        data-soul-anchor="memory"
       >
         <button onClick={() => toggleDrawer("factory")} className="hover:opacity-80 transition-opacity">
           Factory ⌘F
         </button>
-        <button onClick={() => toggleDrawer("fleet")} className="hover:opacity-80 transition-opacity">
+        <button onClick={() => toggleDrawer("fleet")} className="hover:opacity-80 transition-opacity"
+          data-soul-target="chair">
           Fleet ⌘L
         </button>
         <button onClick={() => toggleDrawer("signals")} className="hover:opacity-80 transition-opacity">
