@@ -1,14 +1,14 @@
-import { createClient } from "@supabase/supabase-js";
+import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
 const SUPABASE_URL = "https://oozlawunlkkuaykfunan.supabase.co";
 
-type ServiceClient = ReturnType<typeof createClient>;
-
-let cachedClient: ServiceClient | null = null;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let cachedClient: SupabaseClient<any, "nous"> | null = null;
 let cachedAt = 0;
 const CACHE_TTL = 10 * 60 * 1000; // 10 minutes
 
-export function getServiceClient(): ServiceClient {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function getServiceClient(): SupabaseClient<any, "nous"> {
   const now = Date.now();
   if (cachedClient && now - cachedAt < CACHE_TTL) return cachedClient;
 
@@ -18,7 +18,7 @@ export function getServiceClient(): ServiceClient {
   cachedClient = createClient(SUPABASE_URL, key, {
     db: { schema: "nous" },
     auth: { persistSession: false },
-  });
+  }) as SupabaseClient<any, "nous">;
   cachedAt = now;
   return cachedClient;
 }
