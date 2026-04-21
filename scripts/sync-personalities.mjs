@@ -8,7 +8,6 @@
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import matter from "gray-matter";
-import { createClient } from "@supabase/supabase-js";
 
 const SUPABASE_URL = "https://oozlawunlkkuaykfunan.supabase.co";
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_NOUS;
@@ -18,13 +17,29 @@ if (!SUPABASE_KEY) {
   process.exit(0);
 }
 
-const db = createClient(SUPABASE_URL, SUPABASE_KEY, {
-  db: { schema: "nous" },
-  auth: { persistSession: false },
-});
-
 const REQUIRED_FIELDS = ["slug", "name", "role", "default_provider", "default_model"];
 const PERSONALITIES_DIR = join(process.cwd(), "personalities");
+
+async function upsertPersonality(row) {
+  const resp = await fetch(`${SUPABASE_URL}/rest/v1/personalities`, {
+    method: "POST",
+    headers: {
+      apikey: SUPABASE_KEY,
+      Authorization: `Bearer ${SUPABASE_KEY}`,
+      "Content-Profile": "nous",
+      "Content-Type": "application/json",
+      Prefer: "resolution=merge-duplicates,return=representation",
+    },
+    body: JSON.stringify(row),
+  });
+
+  if (!resp.ok) {
+    const text = await resp.text();
+    throw new Error(`${resp.status}: ${text}`);
+  }
+
+  return resp.json();
+}
 
 async function main() {
   let synced = 0;
@@ -63,14 +78,13 @@ async function main() {
       updated_at: new Date().toISOString(),
     };
 
-    const { error } = await db.from("personalities").upsert(row, { onConflict: "slug" });
-
-    if (error) {
-      errors.push(`${file}: ${error.message}`);
-      skipped++;
-    } else {
+    try {
+      await upsertPersonality(row);
       synced++;
       console.log(`  synced: ${front.slug} (${file})`);
+    } catch (err) {
+      errors.push(`${file}: ${err.message}`);
+      skipped++;
     }
   }
 
