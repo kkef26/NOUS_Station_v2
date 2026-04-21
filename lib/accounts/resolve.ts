@@ -8,10 +8,16 @@
  * Error modes: strict_no_match (strict mode, no account), chain_exhausted (soft mode, all down),
  *   no_enabled_account (legacy compat), db_error (logged)
  * Blast radius: every LLM call path in the station
- * Version: 1.1.0 (extends 1.0.0 from Bite 2.6 with tier-matching + fallback chain)
+ * Version: 2.0.0 (Bite 2.7 — multi-tier per account via account_tier_models join table)
  */
 import { getServiceClient } from "@/lib/supabase/server";
 import { decrypt } from "./crypto";
+
+export type TierModel = {
+  tier: "senior" | "mid" | "junior";
+  model: string | null;
+  enabled: boolean;
+};
 
 export type Account = {
   id: string;
@@ -25,6 +31,7 @@ export type Account = {
   enabled: boolean;
   priority: number;
   rate_limited_until: string | null;
+  tier_models?: TierModel[];
 };
 
 export type ResolveInput = {
@@ -36,7 +43,7 @@ export type ResolveInput = {
 };
 
 export type ResolveResult =
-  | { ok: true; account_id: string; account: Account; auth_type: string; credential: string; label: string; fallback_chain: Account[]; reason?: string }
+  | { ok: true; account_id: string; account: Account; auth_type: string; credential: string; label: string; fallback_chain: Account[]; resolved_model?: string; reason?: string }
   | { ok: false; reason: string; attempted_provider: string; chain_exhausted?: boolean; error?: string; providers_eligible?: string[] };
 
 /** Subscription auth types are preferred over metered API keys within the same tier */
@@ -76,6 +83,15 @@ function isAvailable(account: Account): boolean {
   );
 }
 
+/** Check if account supports a given tier via join table, falling back to legacy scalar */
+function accountSupportsTier(account: Account, tier: "senior" | "mid" | "junior"): boolean {
+  if (account.tier_models && account.tier_models.length > 0) {
+    return account.tier_models.some((tm) => tm.tier === tier && tm.enabled);
+  }
+  // Fallback: legacy scalar capability_tier
+  return account.capability_tier === tier;
+}
+
 /** Sort accounts: subscription-first within tier, then by priority */
 function sortAccounts(accounts: Account[]): Account[] {
   return [...accounts].sort((a, b) => {
@@ -86,15 +102,41 @@ function sortAccounts(accounts: Account[]): Account[] {
   });
 }
 
+/** Look up the model for an account+tier — pinned model from join table, or catalog default */
+async function resolveModel(
+  db: ReturnType<typeof getServiceClient>,
+  account: Account,
+  tier: "senior" | "mid" | "junior"
+): Promise<string | undefined> {
+  // Check join table for a pinned model
+  if (account.tier_models && account.tier_models.length > 0) {
+    const tm = account.tier_models.find((t) => t.tier === tier && t.enabled);
+    if (tm?.model) return tm.model;
+  }
+
+  // Fall back to catalog default for (provider, tier)
+  const { data } = await db
+    .from("model_catalog")
+    .select("model")
+    .eq("provider", account.provider)
+    .eq("tier", tier)
+    .eq("is_default", true)
+    .is("deprecated_at", null)
+    .limit(1)
+    .single();
+
+  return data?.model ?? undefined;
+}
+
 export async function resolveAccount(input: ResolveInput): Promise<ResolveResult> {
   const db = getServiceClient();
   const strict = input.strict ?? false;
   const requestedProvider = input.provider || "auto";
 
-  // Fetch all enabled accounts (we need them for chain building)
+  // Fetch all enabled accounts with their tier_models join
   let query = db
     .from("accounts")
-    .select("id, provider, auth_type, display_label, credential_ref, capabilities, capability_tier, status, enabled, priority, rate_limited_until")
+    .select("id, provider, auth_type, display_label, credential_ref, capabilities, capability_tier, status, enabled, priority, rate_limited_until, account_tier_models(tier, model, enabled)")
     .eq("enabled", true);
 
   // In strict mode, filter by provider
@@ -108,7 +150,29 @@ export async function resolveAccount(input: ResolveInput): Promise<ResolveResult
     console.error("[resolveAccount] DB error:", error.message);
   }
 
-  let accounts = (rows || []) as Account[];
+  // Map rows: attach tier_models from the join, filter to enabled only
+  let accounts = (rows || []).map((row: Record<string, unknown>) => {
+    const tierModelsRaw = (row.account_tier_models || []) as Array<{ tier: string; model: string | null; enabled: boolean }>;
+    const tierModels: TierModel[] = tierModelsRaw
+      .filter((tm) => tm.enabled)
+      .map((tm) => ({ tier: tm.tier as "senior" | "mid" | "junior", model: tm.model, enabled: tm.enabled }));
+
+    const account: Account = {
+      id: row.id as string,
+      provider: row.provider as string,
+      auth_type: row.auth_type as string,
+      display_label: row.display_label as string,
+      credential_ref: row.credential_ref as string | null,
+      capabilities: (row.capabilities || {}) as Record<string, boolean>,
+      capability_tier: row.capability_tier as "senior" | "mid" | "junior",
+      status: row.status as string,
+      enabled: row.enabled as boolean,
+      priority: row.priority as number,
+      rate_limited_until: row.rate_limited_until as string | null,
+      tier_models: tierModels,
+    };
+    return account;
+  });
 
   // Exclude specific account IDs (for retry-after-failure)
   if (input.exclude_account_ids && input.exclude_account_ids.length > 0) {
@@ -164,13 +228,13 @@ export async function resolveAccount(input: ResolveInput): Promise<ResolveResult
   }
 
   // --- SOFT MODE (default) ---
-  // Build tier-matched chain
+  // Build tier-matched chain using account_tier_models join table
   let tierCandidates: Account[];
   let reason: string | undefined;
 
   if (desiredTier) {
-    // Filter by desired tier first
-    tierCandidates = accounts.filter((a) => a.capability_tier === desiredTier && isAvailable(a));
+    // Filter by desired tier using multi-tier join table (with legacy fallback)
+    tierCandidates = accounts.filter((a) => accountSupportsTier(a, desiredTier) && isAvailable(a));
 
     // Provider preference: if specific provider requested, prefer it
     if (requestedProvider !== "auto") {
@@ -190,7 +254,7 @@ export async function resolveAccount(input: ResolveInput): Promise<ResolveResult
       if (desiredIdx < tiers.length - 1) adjacentTiers.push(tiers[desiredIdx + 1]);
 
       for (const adjTier of adjacentTiers) {
-        const adjCandidates = accounts.filter((a) => a.capability_tier === adjTier && isAvailable(a));
+        const adjCandidates = accounts.filter((a) => accountSupportsTier(a, adjTier) && isAvailable(a));
         if (adjCandidates.length > 0) {
           tierCandidates = adjCandidates;
           reason = desiredIdx > tiers.indexOf(adjTier) ? "tier_fallback_up" : "tier_fallback_down";
@@ -231,6 +295,9 @@ export async function resolveAccount(input: ResolveInput): Promise<ResolveResult
   const fallbackChain = sorted.slice(1);
   const credential = resolveCredential(primary);
 
+  // Resolve model for the primary account
+  const resolvedModel = desiredTier ? await resolveModel(db, primary, desiredTier) : undefined;
+
   const now = new Date().toISOString();
   await Promise.all([
     db.from("account_usage_events").insert({
@@ -239,7 +306,8 @@ export async function resolveAccount(input: ResolveInput): Promise<ResolveResult
       detail: {
         purpose: input.purpose,
         mode: "soft",
-        tier: primary.capability_tier,
+        tier: desiredTier || primary.capability_tier,
+        resolved_model: resolvedModel,
         fallback_chain_length: fallbackChain.length,
         reason,
       },
@@ -255,6 +323,7 @@ export async function resolveAccount(input: ResolveInput): Promise<ResolveResult
     credential,
     label: primary.display_label,
     fallback_chain: fallbackChain,
+    resolved_model: resolvedModel,
     reason,
   };
 }
