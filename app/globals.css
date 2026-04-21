@@ -94,6 +94,12 @@ body {
   animation: slide-down 0.35s cubic-bezier(0.32, 0.72, 0, 1);
 }
 
+/* Streaming hairline breath — ≤3% luminance drift, 1.2s cycle */
+@keyframes streaming-breath {
+  0%, 100% { border-color: var(--accent-teal); }
+  50% { border-color: var(--accent-teal-dim); }
+}
+
 /* Scrim overlay */
 .scrim {
   background: var(--scrim);
