@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 
 // Mock the Anthropic SDK
 vi.mock("@anthropic-ai/sdk", () => {
@@ -25,14 +25,12 @@ vi.mock("@anthropic-ai/sdk", () => {
   };
 });
 
-// Set env before import
-process.env.ANTHROPIC_API_KEY = "test-key";
-
 const { AnthropicProvider } = await import("./anthropic");
 
 describe("AnthropicProvider", () => {
   it("emits token and done chunks", async () => {
-    const provider = new AnthropicProvider();
+    // Pass apiKey directly — never read from process.env
+    const provider = new AnthropicProvider("test-key");
     const chunks = [];
 
     for await (const chunk of provider.stream({

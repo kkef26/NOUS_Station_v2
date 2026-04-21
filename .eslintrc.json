@@ -2,6 +2,7 @@
   "extends": [
     "next/core-web-vitals"
   ],
+  "reportUnusedDisableDirectives": false,
   "rules": {
     "no-restricted-syntax": [
       "error",
