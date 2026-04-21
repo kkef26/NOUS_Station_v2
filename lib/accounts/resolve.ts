@@ -185,7 +185,7 @@ export async function resolveAccount(input: ResolveInput): Promise<ResolveResult
       const desiredIdx = tiers.indexOf(desiredTier);
 
       // Try adjacent tiers
-      const adjacentTiers: string[] = [];
+      const adjacentTiers: Array<"senior" | "mid" | "junior"> = [];
       if (desiredIdx > 0) adjacentTiers.push(tiers[desiredIdx - 1]);
       if (desiredIdx < tiers.length - 1) adjacentTiers.push(tiers[desiredIdx + 1]);
 
