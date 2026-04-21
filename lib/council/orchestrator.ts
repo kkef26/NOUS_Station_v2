@@ -1,5 +1,6 @@
 import { getServiceClient } from "@/lib/supabase/server";
 import { getProvider, type Chunk } from "@/lib/llm";
+import { resolveAccount } from "@/lib/accounts/resolve";
 import { DEFAULT_PERSONALITY } from "./fallback";
 
 type SSEChunk =
@@ -21,7 +22,6 @@ export async function runTurn(
 ): Promise<{ turn_id: string; silent: boolean }> {
   const db = getServiceClient();
 
-  // Load thread
   const { data: thread } = await db
     .from("boardroom_threads")
     .select("*")
@@ -30,7 +30,6 @@ export async function runTurn(
 
   if (!thread) throw new Error("Thread not found");
 
-  // Load prior turns
   const { data: priorTurns } = await db
     .from("boardroom_seat_turns")
     .select("*")
@@ -41,7 +40,6 @@ export async function runTurn(
   const seatedPersonalities: string[] = thread.personalities_seated || [];
   const turnMode: string = thread.turn_mode || "round_robin";
 
-  // Determine next seat
   let nextSeat: string;
   if (opts.force_seat) {
     nextSeat = opts.force_seat;
@@ -49,7 +47,6 @@ export async function runTurn(
     nextSeat = pickNextSeat(turns, seatedPersonalities, turnMode, thread.topic, thread.chair_seat);
   }
 
-  // Load personality
   const { data: personality } = await db
     .from("personalities")
     .select("*")
@@ -58,10 +55,16 @@ export async function runTurn(
     .single();
 
   const p = personality || DEFAULT_PERSONALITY;
-  const provider = p.default_provider || DEFAULT_PERSONALITY.default_provider;
+  const providerName = (p.default_provider || DEFAULT_PERSONALITY.default_provider) as "anthropic" | "openai" | "google" | "xai";
   const model = p.default_model || DEFAULT_PERSONALITY.default_model;
 
-  // Build messages from prior turns
+  // Gate: resolve account for this provider
+  const resolved = await resolveAccount({ provider: providerName, purpose: "chat" });
+  if (!resolved.ok) {
+    opts.emit({ event: "error", data: { message: `No enabled ${providerName} account. Open Settings → Accounts.` } });
+    throw new Error("no_enabled_account");
+  }
+
   const messages: Array<{ role: "user" | "assistant" | "system"; content: string }> = [];
   messages.push({ role: "user", content: `Topic: ${thread.topic}` });
 
@@ -74,11 +77,9 @@ export async function runTurn(
     }
   }
 
-  // System prompt
   const systemPrompt = `${p.system_prompt}\n\nBoardroom context: topic="${thread.topic}". Turn mode: ${turnMode}. Speak as ${p.name}. If you have nothing meaningful to add, respond with exactly [SILENCE] and nothing else.`;
 
-  // Stream
-  const llm = getProvider(provider as "anthropic" | "openai" | "google" | "xai");
+  const llm = getProvider(providerName, resolved.credential);
   let fullContent = "";
   let silent = false;
   let tokensIn = 0;
@@ -89,7 +90,6 @@ export async function runTurn(
     for await (const chunk of llm.stream({ messages, system: systemPrompt, model })) {
       if (chunk.type === "token") {
         fullContent += chunk.data;
-        // Check for silence after first meaningful content
         if (!silent && fullContent.trim().startsWith("[SILENCE]")) {
           silent = true;
           opts.emit({ event: "silence", data: { seat: nextSeat } });
@@ -112,18 +112,17 @@ export async function runTurn(
     }
   }
 
-  // Insert turn
   const turnIndex = turns.length;
   const { data: insertedTurn } = await db
     .from("boardroom_seat_turns")
     .insert({
       thread_id: threadId,
       seat_personality: nextSeat,
-      seat_provider: provider,
+      seat_provider: providerName,
       turn_index: turnIndex,
       content: silent ? "" : fullContent,
       silence: silent,
-      provider,
+      provider: providerName,
       model,
       tokens_in: tokensIn,
       tokens_out: tokensOut,
@@ -168,7 +167,6 @@ function pickNextSeat(
         const slug = match[1].toLowerCase();
         if (seats.includes(slug)) return slug;
       }
-      // Fallback to round_robin
       return pickNextSeat(turns, seats, "round_robin", topic, chairSeat);
     }
     case "everyone": {
@@ -176,16 +174,12 @@ function pickNextSeat(
       for (const seat of seats) {
         if (!spoken.has(seat)) return seat;
       }
-      // All spoken, start new round
       return seats[0];
     }
-    case "consensus": {
-      // Same as round_robin but tracked externally for stop condition
+    case "consensus":
       return pickNextSeat(turns, seats, "round_robin", topic, chairSeat);
-    }
-    case "chair": {
+    case "chair":
       return chairSeat || seats[0];
-    }
     default:
       return seats[0];
   }
