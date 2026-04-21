@@ -1,6 +1,7 @@
 import { getServiceClient } from "@/lib/supabase/server";
 import { getProvider, type Chunk } from "@/lib/llm";
 import { resolveAccount } from "@/lib/accounts/resolve";
+import { streamWithChainRetry } from "@/lib/accounts/chain-retry";
 import { DEFAULT_PERSONALITY } from "./fallback";
 
 type SSEChunk =
@@ -58,10 +59,10 @@ export async function runTurn(
   const providerName = (p.default_provider || DEFAULT_PERSONALITY.default_provider) as "anthropic" | "openai" | "google" | "xai";
   const model = p.default_model || DEFAULT_PERSONALITY.default_model;
 
-  // Gate: resolve account for this provider
-  const resolved = await resolveAccount({ provider: providerName, purpose: "chat" });
+  // Gate: resolve account — soft mode for boardroom (ambient, should soft-handover)
+  const resolved = await resolveAccount({ provider: providerName, purpose: "chat", strict: false });
   if (!resolved.ok) {
-    opts.emit({ event: "error", data: { message: `No enabled ${providerName} account. Open Settings → Accounts.` } });
+    opts.emit({ event: "error", data: { message: `No enabled account available. Open Settings → Accounts.` } });
     throw new Error("no_enabled_account");
   }
 
@@ -79,7 +80,19 @@ export async function runTurn(
 
   const systemPrompt = `${p.system_prompt}\n\nBoardroom context: topic="${thread.topic}". Turn mode: ${turnMode}. Speak as ${p.name}. If you have nothing meaningful to add, respond with exactly [SILENCE] and nothing else.`;
 
-  const llm = getProvider(providerName, resolved.credential);
+  const streamInput = { messages, system: systemPrompt, model };
+
+  // Use chain-retry if we have a fallback chain
+  const llmStream = resolved.fallback_chain.length > 0
+    ? streamWithChainRetry({
+        primary: resolved.account,
+        primaryCredential: resolved.credential,
+        fallbackChain: resolved.fallback_chain,
+        streamInput,
+        originalProvider: providerName,
+      })
+    : getProvider(resolved.account.provider as "anthropic" | "openai" | "google" | "xai", resolved.credential).stream(streamInput);
+
   let fullContent = "";
   let silent = false;
   let tokensIn = 0;
@@ -87,7 +100,7 @@ export async function runTurn(
   let latencyMs = 0;
 
   try {
-    for await (const chunk of llm.stream({ messages, system: systemPrompt, model })) {
+    for await (const chunk of llmStream) {
       if (chunk.type === "token") {
         fullContent += chunk.data;
         if (!silent && fullContent.trim().startsWith("[SILENCE]")) {

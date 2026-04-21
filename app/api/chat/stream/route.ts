@@ -2,7 +2,8 @@ import { NextRequest } from "next/server";
 import { z } from "zod/v4";
 import { getServiceClient } from "@/lib/supabase/server";
 import { getProvider, type ProviderName } from "@/lib/llm";
-import { resolveAccount } from "@/lib/accounts/resolve";
+import { resolveAccount, resolveChainCredential } from "@/lib/accounts/resolve";
+import { streamWithChainRetry } from "@/lib/accounts/chain-retry";
 import { DEFAULT_PERSONALITY } from "@/lib/council/fallback";
 import { emitLevel } from "@/lib/levels/emit";
 
@@ -12,12 +13,14 @@ const StreamBody = z.object({
   personality: z.string().optional(),
   provider: z.string().optional(),
   model: z.string().optional(),
+  strict: z.boolean().default(false),
 });
 
 const GATE_BLOCKED = (provider: string) =>
   new Response(
     JSON.stringify({
-      error: "no_enabled_account",
+      error: "provider_not_configured",
+      provider,
       message: `No enabled ${provider} account. Open Settings → Accounts to configure one.`,
       link: "/settings/accounts",
     }),
@@ -34,7 +37,13 @@ export async function POST(req: NextRequest) {
     });
   }
 
-  const { message, personality: personalitySlug, provider: providerOverride, model: modelOverride } = parsed.data;
+  const {
+    message,
+    personality: personalitySlug,
+    provider: providerOverride,
+    model: modelOverride,
+    strict,
+  } = parsed.data;
   let threadId = parsed.data.thread_id;
 
   const db = getServiceClient();
@@ -63,23 +72,20 @@ export async function POST(req: NextRequest) {
   const providerName = (providerOverride || personality.default_provider) as ProviderName;
   const modelName = modelOverride || personality.default_model;
 
-  // Gate: resolve account for the requested provider
-  let resolved = await resolveAccount({ provider: providerName, purpose: "chat" });
-
-  // Explicit fallback: if primary provider has no enabled account, try station_proxy
-  if (!resolved.ok && providerName !== "station_proxy") {
-    const proxyResolved = await resolveAccount({ provider: "station_proxy" });
-    if (proxyResolved.ok) {
-      resolved = proxyResolved;
-    }
-  }
+  // Gate: resolve account with strict/soft mode
+  const resolved = await resolveAccount({
+    provider: providerName === "station_proxy" ? "station_proxy" : providerName,
+    purpose: "chat",
+    strict,
+  });
 
   if (!resolved.ok) {
+    // In strict mode, return 503 naming the originally-requested provider
     return GATE_BLOCKED(providerName);
   }
 
   const credential = resolved.credential;
-  const effectiveProvider = resolved.auth_type === "station_proxy" ? "station_proxy" : providerName;
+  const effectiveProvider = resolved.auth_type === "station_proxy" ? "station_proxy" : (resolved.account.provider as ProviderName);
 
   // Station proxy routing: forward entire request to the proxy
   if (effectiveProvider === "station_proxy") {
@@ -94,6 +100,15 @@ export async function POST(req: NextRequest) {
         body: JSON.stringify({ message, personality: personalitySlug, model: modelName }),
       });
       if (!proxyResp.ok || !proxyResp.body) {
+        // If proxy fails and we have a fallback chain, try next
+        if (resolved.fallback_chain.length > 0) {
+          return handleStreamWithFallback(
+            resolved.fallback_chain,
+            { messages: [{ role: "user" as const, content: message }], system: personality.system_prompt, model: modelName },
+            providerName,
+            db, threadId, workspaceId, personality, message, modelName
+          );
+        }
         return GATE_BLOCKED("station_proxy");
       }
       return new Response(proxyResp.body, {
@@ -105,11 +120,18 @@ export async function POST(req: NextRequest) {
         },
       });
     } catch {
+      if (resolved.fallback_chain.length > 0) {
+        return handleStreamWithFallback(
+          resolved.fallback_chain,
+          { messages: [{ role: "user" as const, content: message }], system: personality.system_prompt, model: modelName },
+          providerName,
+          db, threadId, workspaceId, personality, message, modelName
+        );
+      }
       return GATE_BLOCKED("station_proxy");
     }
   }
 
-  const llm = getProvider(providerName, credential);
   const encoder = new TextEncoder();
 
   const stream = new ReadableStream({
@@ -172,11 +194,24 @@ export async function POST(req: NextRequest) {
         let tokensOut = 0;
         let latencyMs = 0;
 
-        for await (const chunk of llm.stream({
+        const streamInput = {
           messages,
           system: personality.system_prompt,
           model: modelName,
-        })) {
+        };
+
+        // Use chain-retry if we have a fallback chain
+        const llmStream = resolved.fallback_chain.length > 0
+          ? streamWithChainRetry({
+              primary: resolved.account,
+              primaryCredential: credential,
+              fallbackChain: resolved.fallback_chain,
+              streamInput,
+              originalProvider: providerName,
+            })
+          : getProvider(effectiveProvider, credential).stream(streamInput);
+
+        for await (const chunk of llmStream) {
           if (chunk.type === "token") {
             fullContent += chunk.data;
             send("token", chunk.data);
@@ -251,4 +286,95 @@ export async function POST(req: NextRequest) {
       Connection: "keep-alive",
     },
   });
+}
+
+/** Handle streaming with fallback when station_proxy fails */
+async function handleStreamWithFallback(
+  fallbackChain: import("@/lib/accounts/resolve").Account[],
+  streamInput: { messages: Array<{ role: "user" | "assistant" | "system"; content: string }>; system?: string; model: string },
+  originalProvider: string,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  db: any,
+  threadId: string | undefined,
+  workspaceId: string | null,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  personality: any,
+  message: string,
+  modelName: string
+): Promise<Response> {
+  // Try the first fallback account directly
+  const fallback = fallbackChain[0];
+  const credential = resolveChainCredential(fallback);
+  const providerName = fallback.provider as ProviderName;
+
+  try {
+    const llm = getProvider(providerName, credential);
+    const encoder = new TextEncoder();
+
+    const stream = new ReadableStream({
+      async start(controller) {
+        function send(event: string, data: unknown) {
+          controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+        }
+
+        try {
+          let fullContent = "";
+          let tokensIn = 0;
+          let tokensOut = 0;
+          let latencyMs = 0;
+
+          for await (const chunk of llm.stream(streamInput)) {
+            if (chunk.type === "token") {
+              fullContent += chunk.data;
+              send("token", chunk.data);
+            } else if (chunk.type === "done") {
+              tokensIn = chunk.data.tokens_in;
+              tokensOut = chunk.data.tokens_out;
+              latencyMs = chunk.data.latency_ms;
+            } else if (chunk.type === "error") {
+              send("error", { message: chunk.data.message, retryable: false });
+              controller.close();
+              return;
+            }
+          }
+
+          send("done", { tokens_in: tokensIn, tokens_out: tokensOut, latency_ms: latencyMs });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          send("error", { message: msg, retryable: false });
+        } finally {
+          controller.close();
+        }
+      },
+    });
+
+    // Log fallback_fire
+    await db.from("account_usage_events").insert({
+      event_type: "fallback_fire",
+      detail: {
+        to_account_id: fallback.id,
+        reason: "station_proxy_failure",
+        original_provider: originalProvider,
+      },
+    });
+
+    return new Response(stream, {
+      headers: {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache, no-transform",
+        "X-Accel-Buffering": "no",
+        Connection: "keep-alive",
+      },
+    });
+  } catch {
+    return new Response(
+      JSON.stringify({
+        error: "provider_not_configured",
+        provider: originalProvider,
+        message: `No enabled ${originalProvider} account. Open Settings → Accounts to configure one.`,
+        link: "/settings/accounts",
+      }),
+      { status: 503, headers: { "Content-Type": "application/json" } }
+    );
+  }
 }

@@ -1,6 +1,7 @@
 import { getServiceClient } from "@/lib/supabase/server";
 import { getProvider } from "@/lib/llm";
 import { resolveAccount } from "@/lib/accounts/resolve";
+import { streamWithChainRetry } from "@/lib/accounts/chain-retry";
 import { DEFAULT_PERSONALITY } from "./fallback";
 
 type SSEChunk =
@@ -40,10 +41,10 @@ export async function runSynthesis(
   const providerName = (chair.default_provider || DEFAULT_PERSONALITY.default_provider) as "anthropic" | "openai" | "google" | "xai";
   const model = chair.default_model || DEFAULT_PERSONALITY.default_model;
 
-  // Gate: resolve account for this provider
-  const resolved = await resolveAccount({ provider: providerName, purpose: "chat" });
+  // Gate: resolve account — soft mode for synthesis (ambient, should soft-handover)
+  const resolved = await resolveAccount({ provider: providerName, purpose: "chat", strict: false });
   if (!resolved.ok) {
-    emit({ event: "error", data: { message: `No enabled ${providerName} account. Open Settings → Accounts.` } });
+    emit({ event: "error", data: { message: `No enabled account available. Open Settings → Accounts.` } });
     throw new Error("no_enabled_account");
   }
 
@@ -61,13 +62,25 @@ export async function runSynthesis(
 
   const systemPrompt = `${chair.system_prompt}\n\nYou are the chair. Summarize the table's contributions in 3-5 bullets. Identify agreement, disagreement, and open questions. End with a Synthesis Statement (1-2 sentences). Do not speak as any individual seat.`;
 
-  const llm = getProvider(providerName, resolved.credential);
+  const streamInput = { messages, system: systemPrompt, model };
+
+  // Use chain-retry if we have a fallback chain
+  const llmStream = resolved.fallback_chain.length > 0
+    ? streamWithChainRetry({
+        primary: resolved.account,
+        primaryCredential: resolved.credential,
+        fallbackChain: resolved.fallback_chain,
+        streamInput,
+        originalProvider: providerName,
+      })
+    : getProvider(resolved.account.provider as "anthropic" | "openai" | "google" | "xai", resolved.credential).stream(streamInput);
+
   let fullContent = "";
   let tokensIn = 0;
   let tokensOut = 0;
   let latencyMs = 0;
 
-  for await (const chunk of llm.stream({ messages, system: systemPrompt, model })) {
+  for await (const chunk of llmStream) {
     if (chunk.type === "token") {
       fullContent += chunk.data;
       emit({ event: "token", data: chunk.data });

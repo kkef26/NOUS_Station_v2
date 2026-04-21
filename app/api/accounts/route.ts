@@ -6,7 +6,7 @@ export async function GET() {
   const db = getServiceClient();
   const { data, error } = await db
     .from("accounts")
-    .select("id, provider, auth_type, display_label, status, enabled, priority, capabilities, quota_hint, notes, created_at, updated_at, last_used_at, last_error_at, last_error_detail")
+    .select("id, provider, auth_type, display_label, status, enabled, priority, capabilities, capability_tier, quota_hint, notes, created_at, updated_at, last_used_at, last_error_at, last_error_detail, rate_limit_remaining, rate_limited_until, status_reason, status_source, last_known_good_at")
     .order("priority", { ascending: true });
 
   if (error) {
@@ -21,7 +21,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Missing required fields: provider, auth_type, display_label" }, { status: 400 });
   }
 
-  const { provider, auth_type, display_label, priority, credential, capabilities, notes } = body;
+  const { provider, auth_type, display_label, priority, credential, capabilities, notes, capability_tier } = body;
 
   // OAuth for non-Anthropic providers not yet implemented
   if (provider !== "anthropic" && provider !== "station_proxy" && auth_type !== "api_key") {
@@ -49,6 +49,7 @@ export async function POST(req: NextRequest) {
       priority: priority ?? 100,
       credential_ref,
       capabilities: capabilities ?? {},
+      capability_tier: capability_tier ?? "mid",
       notes: notes ?? null,
       enabled: false,
     })

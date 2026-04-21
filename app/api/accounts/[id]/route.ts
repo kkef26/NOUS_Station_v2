@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServiceClient } from "@/lib/supabase/server";
 
-const ALLOWED_PATCH_FIELDS = new Set(["display_label", "priority", "status", "enabled", "capabilities", "notes"]);
+const ALLOWED_PATCH_FIELDS = new Set(["display_label", "priority", "status", "enabled", "capabilities", "capability_tier", "notes"]);
 
 export async function PATCH(req: NextRequest, { params }: { params: { id: string } }) {
   const { id } = params;
@@ -24,7 +24,7 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
     .from("accounts")
     .update(update)
     .eq("id", id)
-    .select("id, provider, auth_type, display_label, status, enabled, priority, capabilities, notes, updated_at")
+    .select("id, provider, auth_type, display_label, status, enabled, priority, capabilities, capability_tier, notes, updated_at")
     .single();
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
