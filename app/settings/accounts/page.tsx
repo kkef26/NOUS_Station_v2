@@ -2,6 +2,19 @@
 
 import { useState, useEffect, useCallback } from "react";
 
+type TierModel = {
+  tier: "senior" | "mid" | "junior";
+  model: string | null;
+  enabled: boolean;
+};
+
+type CatalogEntry = {
+  tier: string;
+  model: string;
+  display_name: string;
+  is_default: boolean;
+};
+
 type Account = {
   id: string;
   provider: string;
@@ -11,7 +24,7 @@ type Account = {
   enabled: boolean;
   priority: number;
   capabilities: Record<string, boolean>;
-  capability_tier: "senior" | "mid" | "junior";
+  tier_models: TierModel[];
   notes: string | null;
   last_used_at: string | null;
   rate_limit_remaining: { tokens_remaining?: number; requests_remaining?: number; reset_at?: string } | null;
@@ -35,10 +48,10 @@ const AUTH_TYPE_LABELS: Record<string, string> = {
   station_proxy: "Proxy",
 };
 
-const TIER_LABELS: Record<string, string> = {
-  senior: "Senior",
-  mid: "Mid",
-  junior: "Junior",
+const TIER_CONFIG: Record<string, { label: string; color: string }> = {
+  senior: { label: "Senior", color: "#14B8A6" },
+  mid: { label: "Mid", color: "#06B6D4" },
+  junior: { label: "Junior", color: "#6B7280" },
 };
 
 function StatusBadge({ account }: { account: Account }) {
@@ -102,16 +115,88 @@ function RateLimitInfo({ account }: { account: Account }) {
   );
 }
 
+function TierToggle({
+  tier,
+  enabled,
+  model,
+  catalogModels,
+  onToggle,
+  onModelChange,
+}: {
+  tier: "senior" | "mid" | "junior";
+  enabled: boolean;
+  model: string | null;
+  catalogModels: CatalogEntry[];
+  onToggle: () => void;
+  onModelChange: (model: string | null) => void;
+}) {
+  const config = TIER_CONFIG[tier];
+  const tierCatalog = catalogModels.filter((m) => m.tier === tier);
+  const defaultModel = tierCatalog.find((m) => m.is_default);
+
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+      <button
+        onClick={onToggle}
+        style={{
+          background: enabled ? config.color : "var(--bg-2)",
+          color: enabled ? "#0A0E1A" : "var(--ink-1)",
+          border: "none",
+          borderRadius: "0.25rem",
+          padding: "0.2rem 0.5rem",
+          cursor: "pointer",
+          fontFamily: "monospace",
+          fontSize: "0.7rem",
+          fontWeight: 600,
+          minWidth: "56px",
+          transition: "background 0.15s, color 0.15s",
+        }}
+      >
+        {config.label}
+      </button>
+      {enabled && tierCatalog.length > 0 && (
+        <select
+          value={model || ""}
+          onChange={(e) => onModelChange(e.target.value || null)}
+          style={{
+            background: "var(--bg-0)",
+            border: "1px solid var(--bg-2)",
+            borderRadius: "0.25rem",
+            color: "var(--ink-0)",
+            fontFamily: "monospace",
+            fontSize: "0.65rem",
+            padding: "0.15rem 0.25rem",
+            cursor: "pointer",
+            maxWidth: "160px",
+          }}
+        >
+          <option value="">
+            {defaultModel ? `${defaultModel.display_name} (default)` : "catalog default"}
+          </option>
+          {tierCatalog.map((m) => (
+            <option key={m.model} value={m.model}>
+              {m.display_name}
+            </option>
+          ))}
+        </select>
+      )}
+    </div>
+  );
+}
+
 export default function AccountsPage() {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [loading, setLoading] = useState(true);
+  const [catalog, setCatalog] = useState<Record<string, CatalogEntry[]>>({});
   const [showModal, setShowModal] = useState(false);
   const [modalStep, setModalStep] = useState(1);
   const [newProvider, setNewProvider] = useState("");
   const [newAuthType, setNewAuthType] = useState("");
   const [newLabel, setNewLabel] = useState("");
   const [newCredential, setNewCredential] = useState("");
-  const [newTier, setNewTier] = useState<"senior" | "mid" | "junior">("mid");
+  const [newTierModels, setNewTierModels] = useState<TierModel[]>([
+    { tier: "mid", model: null, enabled: true },
+  ]);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
@@ -125,7 +210,22 @@ export default function AccountsPage() {
     setLoading(false);
   }, []);
 
+  const fetchCatalog = useCallback(async (provider: string) => {
+    if (catalog[provider]) return;
+    const res = await fetch(`/api/model_catalog?provider=${provider}`);
+    if (res.ok) {
+      const data = await res.json();
+      setCatalog((prev) => ({ ...prev, [provider]: data }));
+    }
+  }, [catalog]);
+
   useEffect(() => { fetchAccounts(); }, [fetchAccounts]);
+
+  // Fetch catalog for each unique provider
+  useEffect(() => {
+    const providers = [...new Set(accounts.map((a) => a.provider))];
+    providers.forEach((p) => fetchCatalog(p));
+  }, [accounts, fetchCatalog]);
 
   const showToast = (msg: string) => {
     setToast(msg);
@@ -161,18 +261,43 @@ export default function AccountsPage() {
     }
   };
 
-  const changeTier = async (account: Account, tier: "senior" | "mid" | "junior") => {
+  const updateTierModels = async (account: Account, tierModels: TierModel[]) => {
     const res = await fetch(`/api/accounts/${account.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ capability_tier: tier }),
+      body: JSON.stringify({ tier_models: tierModels }),
     });
     if (res.ok) {
       setAccounts((prev) =>
-        prev.map((a) => (a.id === account.id ? { ...a, capability_tier: tier } : a))
+        prev.map((a) => (a.id === account.id ? { ...a, tier_models: tierModels } : a))
       );
-      showToast(`${account.display_label} tier set to ${TIER_LABELS[tier]}`);
+      const enabledTiers = tierModels.filter((t) => t.enabled).map((t) => TIER_CONFIG[t.tier].label);
+      showToast(`${account.display_label} tiers: ${enabledTiers.join(", ") || "none"}`);
     }
+  };
+
+  const toggleAccountTier = (account: Account, tier: "senior" | "mid" | "junior") => {
+    const existing = account.tier_models || [];
+    const current = existing.find((tm) => tm.tier === tier);
+    let updated: TierModel[];
+
+    if (current) {
+      updated = existing.map((tm) =>
+        tm.tier === tier ? { ...tm, enabled: !tm.enabled } : tm
+      );
+    } else {
+      updated = [...existing, { tier, model: null, enabled: true }];
+    }
+
+    updateTierModels(account, updated);
+  };
+
+  const setAccountTierModel = (account: Account, tier: "senior" | "mid" | "junior", model: string | null) => {
+    const existing = account.tier_models || [];
+    const updated = existing.map((tm) =>
+      tm.tier === tier ? { ...tm, model } : tm
+    );
+    updateTierModels(account, updated);
   };
 
   const disconnect = async (account: Account) => {
@@ -200,7 +325,7 @@ export default function AccountsPage() {
       provider: newProvider,
       auth_type: newAuthType,
       display_label: newLabel || `${PROVIDER_LABELS[newProvider] || newProvider} (${AUTH_TYPE_LABELS[newAuthType] || newAuthType})`,
-      capability_tier: newTier,
+      tier_models: newTierModels,
     };
     if (newAuthType === "api_key") body.credential = newCredential;
 
@@ -218,7 +343,7 @@ export default function AccountsPage() {
       setNewAuthType("");
       setNewLabel("");
       setNewCredential("");
-      setNewTier("mid");
+      setNewTierModels([{ tier: "mid", model: null, enabled: true }]);
       fetchAccounts();
       showToast("Account added. Toggle it on to activate.");
     } else {
@@ -233,6 +358,14 @@ export default function AccountsPage() {
     xai: ["api_key"],
     station_proxy: ["station_proxy"],
   };
+
+  const getTierState = (account: Account, tier: "senior" | "mid" | "junior") => {
+    const tm = (account.tier_models || []).find((t) => t.tier === tier);
+    return { enabled: tm?.enabled ?? false, model: tm?.model ?? null };
+  };
+
+  const hasNoEnabledTiers = (account: Account) =>
+    !account.tier_models || account.tier_models.length === 0 || !account.tier_models.some((t) => t.enabled);
 
   return (
     <div style={{ background: "var(--bg-0)", color: "var(--ink-0)", minHeight: "100vh", padding: "2rem" }}>
@@ -252,7 +385,7 @@ export default function AccountsPage() {
           <div>
             <h1 style={{ fontSize: "1.5rem", fontWeight: 600, margin: 0 }}>Accounts</h1>
             <p style={{ color: "var(--ink-1)", margin: "0.25rem 0 0", fontSize: "0.875rem" }}>
-              Your LLM sources. Tier-matched fallback chains route requests to peer providers on outage.
+              Your LLM sources. Each account can serve multiple tiers with optional model pinning.
             </p>
           </div>
           <button
@@ -309,22 +442,6 @@ export default function AccountsPage() {
                       <StatusBadge account={account} />
                     </div>
                   </div>
-
-                  {/* Tier dropdown */}
-                  <select
-                    value={account.capability_tier}
-                    onChange={(e) => changeTier(account, e.target.value as "senior" | "mid" | "junior")}
-                    style={{
-                      background: "var(--bg-2)", border: "1px solid var(--bg-2)",
-                      borderRadius: "0.25rem", color: "var(--ink-0)",
-                      fontFamily: "monospace", fontSize: "0.75rem",
-                      padding: "0.25rem 0.375rem", cursor: "pointer",
-                    }}
-                  >
-                    <option value="senior">Senior</option>
-                    <option value="mid">Mid</option>
-                    <option value="junior">Junior</option>
-                  </select>
 
                   {/* Priority arrows */}
                   <div style={{ display: "flex", flexDirection: "column", gap: "0.125rem" }}>
@@ -386,6 +503,37 @@ export default function AccountsPage() {
                   </details>
                 </div>
 
+                {/* Tier toggles row */}
+                <div style={{
+                  display: "flex", gap: "0.75rem", marginTop: "0.75rem", paddingLeft: "1.5rem",
+                  flexWrap: "wrap", alignItems: "center",
+                }}>
+                  {(["senior", "mid", "junior"] as const).map((tier) => {
+                    const state = getTierState(account, tier);
+                    return (
+                      <TierToggle
+                        key={tier}
+                        tier={tier}
+                        enabled={state.enabled}
+                        model={state.model}
+                        catalogModels={catalog[account.provider] || []}
+                        onToggle={() => toggleAccountTier(account, tier)}
+                        onModelChange={(model) => setAccountTierModel(account, tier, model)}
+                      />
+                    );
+                  })}
+                </div>
+
+                {/* Warning: no enabled tiers */}
+                {hasNoEnabledTiers(account) && (
+                  <div style={{
+                    color: "var(--rogue)", fontSize: "0.7rem", marginTop: "0.5rem",
+                    paddingLeft: "1.5rem", fontFamily: "monospace",
+                  }}>
+                    Account is unreachable: enable at least one tier.
+                  </div>
+                )}
+
                 <RateLimitInfo account={account} />
 
                 {account.notes && (
@@ -430,7 +578,7 @@ export default function AccountsPage() {
                 <p style={{ color: "var(--ink-1)", fontSize: "0.875rem", marginTop: 0 }}>Choose a provider:</p>
                 <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
                   {["anthropic", "openai", "google", "xai", "station_proxy"].map((p) => (
-                    <button key={p} onClick={() => { setNewProvider(p); setModalStep(2); }}
+                    <button key={p} onClick={() => { setNewProvider(p); setModalStep(2); fetchCatalog(p); }}
                       style={{
                         padding: "0.75rem 1rem", background: "var(--bg-2)",
                         border: "1px solid var(--bg-2)", borderRadius: "0.375rem",
@@ -492,23 +640,44 @@ export default function AccountsPage() {
                 </div>
 
                 <div style={{ marginBottom: "1rem" }}>
-                  <label style={{ display: "block", color: "var(--ink-1)", fontSize: "0.8rem", marginBottom: "0.25rem" }}>
-                    Capability Tier
+                  <label style={{ display: "block", color: "var(--ink-1)", fontSize: "0.8rem", marginBottom: "0.5rem" }}>
+                    Tier Assignment
                   </label>
-                  <select
-                    value={newTier}
-                    onChange={(e) => setNewTier(e.target.value as "senior" | "mid" | "junior")}
-                    style={{
-                      width: "100%", padding: "0.5rem 0.75rem",
-                      background: "var(--bg-0)", border: "1px solid var(--bg-2)",
-                      borderRadius: "0.375rem", color: "var(--ink-0)",
-                      fontFamily: "monospace", fontSize: "0.875rem", boxSizing: "border-box",
-                    }}
-                  >
-                    <option value="senior">Senior (Opus, GPT-4o, Gemini Ultra, Grok-3)</option>
-                    <option value="mid">Mid (Sonnet, GPT-4, Gemini Pro)</option>
-                    <option value="junior">Junior (Haiku, Mini, Flash)</option>
-                  </select>
+                  <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
+                    {(["senior", "mid", "junior"] as const).map((tier) => {
+                      const isEnabled = newTierModels.some((tm) => tm.tier === tier && tm.enabled);
+                      const config = TIER_CONFIG[tier];
+                      return (
+                        <button
+                          key={tier}
+                          onClick={() => {
+                            setNewTierModels((prev) => {
+                              const existing = prev.find((tm) => tm.tier === tier);
+                              if (existing) {
+                                return prev.map((tm) =>
+                                  tm.tier === tier ? { ...tm, enabled: !tm.enabled } : tm
+                                );
+                              }
+                              return [...prev, { tier, model: null, enabled: true }];
+                            });
+                          }}
+                          style={{
+                            background: isEnabled ? config.color : "var(--bg-2)",
+                            color: isEnabled ? "#0A0E1A" : "var(--ink-1)",
+                            border: "none",
+                            borderRadius: "0.25rem",
+                            padding: "0.375rem 0.75rem",
+                            cursor: "pointer",
+                            fontFamily: "monospace",
+                            fontSize: "0.8rem",
+                            fontWeight: 600,
+                          }}
+                        >
+                          {config.label}
+                        </button>
+                      );
+                    })}
+                  </div>
                 </div>
 
                 {(newAuthType === "api_key" || newAuthType === "oauth_max" || newAuthType === "oauth_pro") && (

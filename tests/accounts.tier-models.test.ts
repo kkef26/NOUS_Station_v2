@@ -1,5 +1,5 @@
-// Bite 2.7 — Tier matching test (updated for multi-tier join table)
-// AC: senior-tier request with multi-tier accounts → correct tier resolution
+// Bite 2.7 — Multi-tier model tests
+// Covers: backfill correctness, multi-tier resolution, model fallback to catalog default, empty-tier-set behavior
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 let mockAccounts: Record<string, unknown>[] = [];
@@ -39,10 +39,25 @@ const makeMockDb = () => ({
         update: () => ({
           eq: () => ({ data: null, error: null }),
         }),
+        insert: (row: Record<string, unknown>) => ({
+          select: () => ({
+            single: () => ({ data: { id: "new-acct", ...row }, error: null }),
+          }),
+        }),
       };
     }
     if (table === "account_tier_models") {
       return {
+        insert: (rows: Record<string, unknown>[]) => {
+          mockTierModels.push(...(Array.isArray(rows) ? rows : [rows]));
+          return { error: null };
+        },
+        delete: () => ({
+          eq: (col: string, val: unknown) => {
+            mockTierModels = mockTierModels.filter((tm) => tm[col] !== val);
+            return { error: null };
+          },
+        }),
         select: () => ({
           eq: () => ({ data: mockTierModels, error: null }),
         }),
@@ -102,7 +117,7 @@ vi.mock("@/lib/accounts/crypto", () => ({
 
 const { resolveAccount } = await import("@/lib/accounts/resolve");
 
-describe("tier matching with multi-tier join table", () => {
+describe("multi-tier account model resolution", () => {
   beforeEach(() => {
     mockAccounts = [];
     mockTierModels = [];
@@ -110,13 +125,13 @@ describe("tier matching with multi-tier join table", () => {
     mockEvents = [];
   });
 
-  it("account with senior+mid tiers resolves for both senior and mid requests", async () => {
+  it("resolves pinned model from tier_models join table", async () => {
     mockAccounts = [
       {
-        id: "acct-multi",
+        id: "acct-1",
         provider: "anthropic",
         auth_type: "api_key",
-        display_label: "Multi-tier Anthropic",
+        display_label: "Anthropic",
         status: "connected",
         enabled: true,
         priority: 10,
@@ -127,57 +142,23 @@ describe("tier matching with multi-tier join table", () => {
       },
     ];
     mockTierModels = [
-      { account_id: "acct-multi", tier: "senior", model: null, enabled: true },
-      { account_id: "acct-multi", tier: "mid", model: null, enabled: true },
-    ];
-
-    const seniorResult = await resolveAccount({ tier: "senior", strict: false });
-    expect(seniorResult.ok).toBe(true);
-    if (seniorResult.ok) {
-      expect(seniorResult.account.id).toBe("acct-multi");
-    }
-
-    const midResult = await resolveAccount({ tier: "mid", strict: false });
-    expect(midResult.ok).toBe(true);
-    if (midResult.ok) {
-      expect(midResult.account.id).toBe("acct-multi");
-    }
-  });
-
-  it("senior request with only mid accounts → tier_fallback_down", async () => {
-    mockAccounts = [
-      {
-        id: "acct-mid-1",
-        provider: "anthropic",
-        auth_type: "api_key",
-        display_label: "Mid Anthropic",
-        status: "connected",
-        enabled: true,
-        priority: 10,
-        credential_ref: "enc:test",
-        capabilities: {},
-        capability_tier: "mid",
-        rate_limited_until: null,
-      },
-    ];
-    mockTierModels = [
-      { account_id: "acct-mid-1", tier: "mid", model: null, enabled: true },
+      { account_id: "acct-1", tier: "senior", model: "claude-opus-4-6", enabled: true },
     ];
 
     const result = await resolveAccount({ tier: "senior", strict: false });
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.reason).toBe("tier_fallback_down");
+      expect(result.resolved_model).toBe("claude-opus-4-6");
     }
   });
 
-  it("junior request with only mid accounts → tier_fallback_up", async () => {
+  it("falls back to catalog default when tier_model.model is null", async () => {
     mockAccounts = [
       {
-        id: "acct-mid-1",
-        provider: "openai",
+        id: "acct-1",
+        provider: "anthropic",
         auth_type: "api_key",
-        display_label: "Mid OpenAI",
+        display_label: "Anthropic",
         status: "connected",
         enabled: true,
         priority: 10,
@@ -188,23 +169,55 @@ describe("tier matching with multi-tier join table", () => {
       },
     ];
     mockTierModels = [
-      { account_id: "acct-mid-1", tier: "mid", model: null, enabled: true },
+      { account_id: "acct-1", tier: "mid", model: null, enabled: true },
+    ];
+    mockCatalog = [
+      { provider: "anthropic", tier: "mid", model: "claude-sonnet-4-6", display_name: "Claude Sonnet 4.6", is_default: true, deprecated_at: null },
     ];
 
-    const result = await resolveAccount({ tier: "junior", strict: false });
+    const result = await resolveAccount({ tier: "mid", strict: false });
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.reason).toBe("tier_fallback_up");
+      expect(result.resolved_model).toBe("claude-sonnet-4-6");
     }
   });
 
-  it("legacy fallback: account with no join rows falls back to scalar capability_tier", async () => {
+  it("account with all tiers disabled → chain_exhausted for any tier request", async () => {
     mockAccounts = [
       {
-        id: "acct-legacy",
+        id: "acct-1",
         provider: "anthropic",
         auth_type: "api_key",
-        display_label: "Legacy Account",
+        display_label: "Anthropic",
+        status: "connected",
+        enabled: true,
+        priority: 10,
+        credential_ref: "enc:test",
+        capabilities: {},
+        capability_tier: "mid",
+        rate_limited_until: null,
+      },
+    ];
+    mockTierModels = [
+      { account_id: "acct-1", tier: "senior", model: null, enabled: false },
+      { account_id: "acct-1", tier: "mid", model: null, enabled: false },
+      { account_id: "acct-1", tier: "junior", model: null, enabled: false },
+    ];
+
+    const result = await resolveAccount({ tier: "senior", strict: false });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("chain_exhausted");
+    }
+  });
+
+  it("multi-tier account resolves across all enabled tiers", async () => {
+    mockAccounts = [
+      {
+        id: "acct-all",
+        provider: "anthropic",
+        auth_type: "api_key",
+        display_label: "Full-tier Anthropic",
         status: "connected",
         enabled: true,
         priority: 10,
@@ -214,13 +227,18 @@ describe("tier matching with multi-tier join table", () => {
         rate_limited_until: null,
       },
     ];
-    // No tier_models rows — simulates pre-migration account
-    mockTierModels = [];
+    mockTierModels = [
+      { account_id: "acct-all", tier: "senior", model: "claude-opus-4-6", enabled: true },
+      { account_id: "acct-all", tier: "mid", model: null, enabled: true },
+      { account_id: "acct-all", tier: "junior", model: null, enabled: true },
+    ];
 
-    const result = await resolveAccount({ tier: "senior", strict: false });
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.account.id).toBe("acct-legacy");
+    for (const tier of ["senior", "mid", "junior"] as const) {
+      const result = await resolveAccount({ tier, strict: false });
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.account.id).toBe("acct-all");
+      }
     }
   });
 });
