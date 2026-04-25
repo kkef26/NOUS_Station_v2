@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "node scripts/audit-banned-patterns.mjs && node scripts/sync-personalities.mjs && next lint && next build --no-lint",
+    "build": "node scripts/audit-banned-patterns.mjs && (node scripts/sync-personalities.mjs || true) && next lint && next build --no-lint",
     "start": "next start",
     "lint": "next lint",
     "audit": "node scripts/audit-banned-patterns.mjs",
