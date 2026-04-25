@@ -4,9 +4,6 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { usePathname } from 'next/navigation';
 import Link from 'next/link';
 import { Activity, MessageSquare, Users, Factory, Cpu, Radio, Settings } from 'lucide-react';
-import { RogueBanner } from '@/components/RogueControls';
-import { ConnectivityArcsOverlay } from '@/components/ConnectivityArcs';
-import { useAmbientDepth } from '@/lib/ambient-depth';
 import { useStore } from '@/lib/store';
 
 interface ChipDef {
@@ -52,7 +49,6 @@ function useIsMobile() {
 
 export function StationChrome({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const feel = useAmbientDepth();
   const isMobile = useIsMobile();
   const { navRailMode, setNavRailMode } = useStore();
 
@@ -128,175 +124,164 @@ export function StationChrome({ children }: { children: React.ReactNode }) {
   const showEdgeZone = (isAutoHide && !railVisible) || isAlwaysHide;
 
   return (
-    <>
-      <RogueBanner />
+    <div
+      data-station-chrome
+      style={{
+        display: 'flex',
+        width: '100%',
+        height: '100vh',
+        overflow: 'hidden',
+        position: 'relative',
+      }}
+    >
+      {/* Edge hover zone — invisible strip on left edge when rail is hidden */}
+      {showEdgeZone && !isMobile && (
+        <div
+          onMouseEnter={handleEdgeEnter}
+          onMouseLeave={handleEdgeLeave}
+          onContextMenu={handleContextMenu}
+          style={{
+            position: 'fixed',
+            left: 0,
+            top: 0,
+            width: EDGE_ZONE_PX,
+            height: '100%',
+            zIndex: 200,
+            cursor: 'default',
+          }}
+        />
+      )}
 
-      <div
-        data-station-chrome
-        style={{
-          display: 'flex',
-          width: '100%',
-          height: '100vh',
-          overflow: 'hidden',
-          position: 'relative',
-          '--soul-hue': `${feel.soulHue}`,
-          '--depth-ambient': `${feel.depthAmbient.toFixed(3)}`,
-          '--arc-density': `${feel.arcDensity}`,
-        } as React.CSSProperties}
-      >
-        {/* Edge hover zone — invisible strip on left edge when rail is hidden */}
-        {showEdgeZone && !isMobile && (
-          <div
-            onMouseEnter={handleEdgeEnter}
-            onMouseLeave={handleEdgeLeave}
-            onContextMenu={handleContextMenu}
-            style={{
-              position: 'fixed',
+      {/* Fixed left rail — slides in/out */}
+      {!isMobile && (
+        <nav
+          ref={navRef}
+          aria-label="Station navigation"
+          onMouseEnter={handleRailEnter}
+          onMouseLeave={handleRailLeave}
+          onContextMenu={handleContextMenu}
+          style={{
+            width: RAIL_WIDTH,
+            minWidth: RAIL_WIDTH,
+            height: '100%',
+            background: 'var(--bg-0)',
+            borderRight: '1px solid color-mix(in oklab, var(--text-tertiary, #666) 12%, transparent)',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            paddingTop: 8,
+            paddingBottom: 8,
+            zIndex: 150,
+            flexShrink: 0,
+            borderRadius: 0,
+            // Auto-hide: use position fixed + transform for slide effect
+            ...(navRailMode !== 'always-show' ? {
+              position: 'fixed' as const,
               left: 0,
               top: 0,
-              width: EDGE_ZONE_PX,
-              height: '100%',
-              zIndex: 200,
-              cursor: 'default',
-            }}
-          />
-        )}
-
-        {/* Fixed left rail — slides in/out */}
-        {!isMobile && (
-          <nav
-            ref={navRef}
-            aria-label="Station navigation"
-            onMouseEnter={handleRailEnter}
-            onMouseLeave={handleRailLeave}
-            onContextMenu={handleContextMenu}
-            style={{
-              width: RAIL_WIDTH,
-              minWidth: RAIL_WIDTH,
-              height: '100%',
-              background: 'var(--bg-0)',
-              borderRight: '1px solid color-mix(in oklab, var(--text-tertiary, #666) 12%, transparent)',
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'center',
-              paddingTop: 8,
-              paddingBottom: 8,
-              zIndex: 150,
-              flexShrink: 0,
-              borderRadius: 0,
-              // Auto-hide: use position fixed + transform for slide effect
-              ...(navRailMode !== 'always-show' ? {
-                position: 'fixed' as const,
-                left: 0,
-                top: 0,
-                transform: showRail ? 'translateX(0)' : `translateX(-${RAIL_WIDTH + 1}px)`,
-                transition: `transform ${SLIDE_DURATION} ease-out`,
-                boxShadow: showRail ? '4px 0 12px rgba(0,0,0,0.3)' : 'none',
-              } : {}),
-            }}
-          >
-            {/* Room chips */}
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, flex: 1 }}>
-              {CHIPS.map(({ icon: Icon, label, href, match }) => {
-                const isActive = match(pathname);
-                return (
-                  <RailChip
-                    key={label}
-                    href={href}
-                    title={label}
-                    isActive={isActive}
-                    icon={<Icon size={18} color="currentColor" />}
-                  />
-                );
-              })}
-            </div>
-
-            {/* Settings gear — pinned bottom */}
-            <RailChip
-              href="/settings"
-              title="Settings"
-              isActive={pathname.startsWith('/settings')}
-              icon={<Settings size={18} color="currentColor" />}
-            />
-          </nav>
-        )}
-
-        {/* Main canvas */}
-        <div style={{
-          flex: 1,
-          position: 'relative',
-          overflow: 'hidden',
-          height: '100%',
-          paddingBottom: isMobile ? 56 : 0,
-          // When rail is auto-hide/always-hide, content takes full width
-          // (rail is position:fixed, doesn't occupy flow)
-          marginLeft: navRailMode !== 'always-show' && !isMobile ? 0 : undefined,
-        }}>
-          <ConnectivityArcsOverlay level={feel.level} arcDensity={feel.arcDensity} />
-          {children}
-        </div>
-
-        {/* Bottom tab bar — mobile only */}
-        {isMobile && (
-          <nav
-            aria-label="Station navigation"
-            style={{
-              position: 'fixed',
-              bottom: 0,
-              left: 0,
-              right: 0,
-              height: 56,
-              background: 'var(--bg-0)',
-              borderTop: '1px solid color-mix(in oklab, var(--text-tertiary, #666) 12%, transparent)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-around',
-              zIndex: 100,
-              paddingBottom: 'env(safe-area-inset-bottom, 0px)',
-            }}
-          >
+              transform: showRail ? 'translateX(0)' : `translateX(-${RAIL_WIDTH + 1}px)`,
+              transition: `transform ${SLIDE_DURATION} ease-out`,
+              boxShadow: showRail ? '4px 0 12px rgba(0,0,0,0.3)' : 'none',
+            } : {}),
+          }}
+        >
+          {/* Room chips */}
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, flex: 1 }}>
             {CHIPS.map(({ icon: Icon, label, href, match }) => {
               const isActive = match(pathname);
               return (
-                <Link
+                <RailChip
                   key={label}
                   href={href}
                   title={label}
-                  style={{
-                    display: 'flex',
-                    flexDirection: 'column',
-                    alignItems: 'center',
-                    gap: 2,
-                    padding: '6px 0',
-                    color: isActive ? '#0891B2' : 'var(--text-tertiary)',
-                    textDecoration: 'none',
-                    fontSize: 10,
-                    fontWeight: isActive ? 600 : 400,
-                    transition: 'color 0.15s ease',
-                  }}
-                >
-                  <Icon size={20} color="currentColor" />
-                  <span>{label}</span>
-                </Link>
+                  isActive={isActive}
+                  icon={<Icon size={18} color="currentColor" />}
+                />
               );
             })}
-          </nav>
-        )}
+          </div>
 
-        {/* Right-click context menu */}
-        {contextMenuPos && (
-          <NavRailContextMenu
-            x={contextMenuPos.x}
-            y={contextMenuPos.y}
-            currentMode={navRailMode}
-            onSelect={(mode) => {
-              setNavRailMode(mode);
-              setContextMenuPos(null);
-            }}
+          {/* Settings gear — pinned bottom */}
+          <RailChip
+            href="/settings"
+            title="Settings"
+            isActive={pathname.startsWith('/settings')}
+            icon={<Settings size={18} color="currentColor" />}
           />
-        )}
+        </nav>
+      )}
+
+      {/* Main canvas */}
+      <div style={{
+        flex: 1,
+        position: 'relative',
+        overflow: 'hidden',
+        height: '100%',
+        paddingBottom: isMobile ? 56 : 0,
+      }}>
+        {children}
       </div>
-    </>
+
+      {/* Bottom tab bar — mobile only */}
+      {isMobile && (
+        <nav
+          aria-label="Station navigation"
+          style={{
+            position: 'fixed',
+            bottom: 0,
+            left: 0,
+            right: 0,
+            height: 56,
+            background: 'var(--bg-0)',
+            borderTop: '1px solid color-mix(in oklab, var(--text-tertiary, #666) 12%, transparent)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-around',
+            zIndex: 100,
+            paddingBottom: 'env(safe-area-inset-bottom, 0px)',
+          }}
+        >
+          {CHIPS.map(({ icon: Icon, label, href, match }) => {
+            const isActive = match(pathname);
+            return (
+              <Link
+                key={label}
+                href={href}
+                title={label}
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  gap: 2,
+                  padding: '6px 0',
+                  color: isActive ? '#0891B2' : 'var(--text-tertiary)',
+                  textDecoration: 'none',
+                  fontSize: 10,
+                  fontWeight: isActive ? 600 : 400,
+                  transition: 'color 0.15s ease',
+                }}
+              >
+                <Icon size={20} color="currentColor" />
+                <span>{label}</span>
+              </Link>
+            );
+          })}
+        </nav>
+      )}
+
+      {/* Right-click context menu */}
+      {contextMenuPos && (
+        <NavRailContextMenu
+          x={contextMenuPos.x}
+          y={contextMenuPos.y}
+          currentMode={navRailMode}
+          onSelect={(mode) => {
+            setNavRailMode(mode);
+            setContextMenuPos(null);
+          }}
+        />
+      )}
+    </div>
   );
 }
 
