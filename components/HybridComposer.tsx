@@ -19,9 +19,12 @@ const SLASH_COMMANDS = [
   { command: "/boardroom", description: "Open boardroom with topic" },
 ];
 
-/* ── List helpers ─────────────────────────────────────────────── */
+/* ── List + indent helpers ────────────────────────────────────── */
 
-const LIST_RE = /^(\s*)((\d+)\.|([*\-]))\s/;
+const INDENT = "  "; // 2-space indent per level
+
+// Matches: optional indent + (number. | letter. | roman. | bullet) + space
+const LIST_RE = /^(\s*)((\d+)\.|([a-z])\.|([ivxlcdm]+)\.|([*\-+]))\s/i;
 
 function getLineAt(text: string, pos: number) {
   const before = text.slice(0, pos);
@@ -34,24 +37,100 @@ function getLineAt(text: string, pos: number) {
   };
 }
 
-function nextListPrefix(line: string): string | null {
+function indentLevel(line: string): number {
+  const m = line.match(/^(\s*)/);
+  return m ? Math.floor(m[1].length / INDENT.length) : 0;
+}
+
+// Bullet markers cycle by depth: *, -, +
+const BULLET_CYCLE = ["*", "-", "+"];
+
+// Number sequences by depth: 1./2./3., a./b./c., i./ii./iii.
+function nextNumbered(current: string, depth: number): string {
+  if (depth % 3 === 0) {
+    // Arabic numerals
+    const n = parseInt(current, 10);
+    return isNaN(n) ? "1" : String(n + 1);
+  } else if (depth % 3 === 1) {
+    // Lowercase letters
+    if (/^[a-z]$/i.test(current)) {
+      return String.fromCharCode(current.toLowerCase().charCodeAt(0) + 1);
+    }
+    return "a";
+  } else {
+    // Roman numerals (simple)
+    const romans = ["i", "ii", "iii", "iv", "v", "vi", "vii", "viii", "ix", "x"];
+    const idx = romans.indexOf(current.toLowerCase());
+    return idx >= 0 && idx < romans.length - 1 ? romans[idx + 1] : "i";
+  }
+}
+
+function firstForDepth(depth: number, isNumbered: boolean): string {
+  if (!isNumbered) {
+    return BULLET_CYCLE[depth % BULLET_CYCLE.length];
+  }
+  if (depth % 3 === 0) return "1";
+  if (depth % 3 === 1) return "a";
+  return "i";
+}
+
+function parseListItem(line: string) {
   const m = line.match(LIST_RE);
   if (!m) return null;
   const indent = m[1];
-  if (m[3]) {
-    // numbered: increment
-    return `${indent}${parseInt(m[3], 10) + 1}. `;
-  }
-  // bullet
-  return `${indent}${m[4]} `;
+  const depth = Math.floor(indent.length / INDENT.length);
+  const isNumbered = !m[6]; // m[6] is the bullet group
+  const marker = m[3] || m[4] || m[5] || m[6]; // the actual marker text
+  const fullPrefix = m[0]; // everything including trailing space
+  const content = line.slice(fullPrefix.length);
+  return { indent, depth, isNumbered, marker, fullPrefix, content };
 }
 
 function isEmptyListItem(line: string): boolean {
-  const m = line.match(LIST_RE);
-  if (!m) return false;
-  // After the prefix, nothing but whitespace
-  const rest = line.slice(m[0].length);
-  return rest.trim() === "";
+  const parsed = parseListItem(line);
+  if (!parsed) return false;
+  return parsed.content.trim() === "";
+}
+
+function nextListPrefix(line: string): string | null {
+  const parsed = parseListItem(line);
+  if (!parsed) return null;
+  const { indent, depth, isNumbered, marker } = parsed;
+  if (isNumbered) {
+    return indent + nextNumbered(marker, depth) + ". ";
+  }
+  return indent + marker + " ";
+}
+
+// When Tab is pressed on a list item: increase indent + reset marker for new depth
+function indentListItem(line: string): string {
+  const parsed = parseListItem(line);
+  if (!parsed) {
+    // Not a list item — just indent the text
+    return INDENT + line;
+  }
+  const newDepth = parsed.depth + 1;
+  const newIndent = INDENT.repeat(newDepth);
+  const newMarker = firstForDepth(newDepth, parsed.isNumbered);
+  const suffix = parsed.isNumbered ? ". " : " ";
+  return newIndent + newMarker + suffix + parsed.content;
+}
+
+// When Shift+Tab is pressed on a list item: decrease indent + reset marker for new depth
+function unindentListItem(line: string): string {
+  const parsed = parseListItem(line);
+  if (!parsed) {
+    // Not a list item — just remove leading indent
+    if (line.startsWith(INDENT)) return line.slice(INDENT.length);
+    if (line.startsWith("\t")) return line.slice(1);
+    return line;
+  }
+  if (parsed.depth === 0) return line; // Already at root
+  const newDepth = parsed.depth - 1;
+  const newIndent = INDENT.repeat(newDepth);
+  const newMarker = firstForDepth(newDepth, parsed.isNumbered);
+  const suffix = parsed.isNumbered ? ". " : " ";
+  return newIndent + newMarker + suffix + parsed.content;
 }
 
 /* ── Component ────────────────────────────────────────────────── */
@@ -151,44 +230,39 @@ export function HybridComposer({
       /* ── Shift+Enter → newline + auto-continue lists ────── */
       if (e.key === "Enter" && e.shiftKey) {
         e.preventDefault();
-        const { line, lineEnd } = getLineAt(value, pos);
+        const { line, lineStart, lineEnd } = getLineAt(value, pos);
 
         // If current line is an empty list item, break out of the list
         if (isEmptyListItem(line)) {
-          const { lineStart } = getLineAt(value, pos);
           splice(lineStart, lineEnd, "");
           return;
         }
 
         // Auto-continue numbered/bullet list
         const prefix = nextListPrefix(line);
-        if (prefix && pos >= lineEnd - 1) {
-          // Cursor at or near end of line — continue list
+        if (prefix) {
           splice(pos, pos, "\n" + prefix);
         } else {
-          // No list context or cursor mid-line — plain newline
           splice(pos, pos, "\n");
         }
         return;
       }
 
-      /* ── Tab → indent current line ──────────────────────── */
+      /* ── Tab → indent / nest list item ──────────────────── */
       if (e.key === "Tab" && !e.shiftKey) {
         e.preventDefault();
-        const { lineStart } = getLineAt(value, pos);
-        splice(lineStart, lineStart, "  ");
+        const { lineStart, lineEnd, line } = getLineAt(value, pos);
+        const newLine = indentListItem(line);
+        splice(lineStart, lineEnd, newLine);
         return;
       }
 
-      /* ── Shift+Tab → unindent current line ──────────────── */
+      /* ── Shift+Tab → unindent / un-nest list item ──────── */
       if (e.key === "Tab" && e.shiftKey) {
         e.preventDefault();
-        const { lineStart, line } = getLineAt(value, pos);
-        if (line.startsWith("  ")) {
-          splice(lineStart, lineStart + 2, "");
-        } else if (line.startsWith("\t")) {
-          splice(lineStart, lineStart + 1, "");
-        }
+        const { lineStart, lineEnd, line } = getLineAt(value, pos);
+        const newLine = unindentListItem(line);
+        splice(lineStart, lineEnd, newLine);
         return;
       }
     },
@@ -230,7 +304,6 @@ export function HybridComposer({
           if (!args) return;
           try {
             const resp = await fetch(\`/api/recall?q=personality+\${encodeURIComponent(args)}\`);
-            // Just set the personality badge — validation happens on send
             setPersonalityBadge(args.trim());
             useChatStore.getState().setActivePersonality(args.trim());
           } catch {
@@ -413,7 +486,7 @@ export function HybridComposer({
       {/* Keyboard hint */}
       <div className="px-3 pt-1 flex gap-3">
         <span className="text-[10px]" style={{ color: "var(--ink-1)", opacity: 0.5 }}>
-          Enter to send · Shift+Enter new line · Tab indent · Shift+Tab unindent
+          ↵ send · ⇧↵ new line · Tab nest · ⇧Tab un-nest
         </span>
       </div>
 
