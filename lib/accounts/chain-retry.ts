@@ -6,7 +6,7 @@
  * Outputs: AsyncIterable<Chunk> (from whichever account succeeds)
  * Error modes: chain_exhausted (all accounts fail), upstream_error, rate_limited, credential_expired
  * Blast radius: wraps every LLM call site
- * Version: 1.0.0
+ * Version: 2.0.0 — station_proxy is now a proper LLMProvider, no longer skipped
  */
 import { getServiceClient } from "@/lib/supabase/server";
 import { getProvider, type Chunk, type ProviderName } from "@/lib/llm";
@@ -18,6 +18,9 @@ type StreamInput = {
   system?: string;
   model: string;
   maxTokens?: number;
+  provider?: string;
+  provider_model?: string;
+  personality?: string;
 };
 
 type ChainRetryOpts = {
@@ -55,13 +58,6 @@ export async function* streamWithChainRetry(opts: ChainRetryOpts): AsyncIterable
     const providerName = accountProviderName(account);
     const isLast = i === chain.length - 1;
 
-    // Skip station_proxy if we can't route to it
-    if (providerName === "station_proxy") {
-      // station_proxy is handled separately in the chat route
-      // For chain retry in non-chat contexts, skip it
-      if (!isLast) continue;
-    }
-
     try {
       const llm = getProvider(providerName, credential);
       let hasError = false;
@@ -83,7 +79,6 @@ export async function* streamWithChainRetry(opts: ChainRetryOpts): AsyncIterable
           let reason = "upstream_error";
           if (is429) {
             reason = "rate_limited";
-            // Create a mock Response for mark429
             const mockHeaders = new Headers();
             const mockResp = new Response(null, { status: 429, headers: mockHeaders });
             await mark429(account.id, providerName, mockResp);

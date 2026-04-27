@@ -1,5 +1,5 @@
 import { getServiceClient } from "@/lib/supabase/server";
-import { getProvider, type Chunk } from "@/lib/llm";
+import { getProvider, type Chunk, type ProviderName } from "@/lib/llm";
 import { resolveAccount } from "@/lib/accounts/resolve";
 import { streamWithChainRetry } from "@/lib/accounts/chain-retry";
 import { DEFAULT_PERSONALITY } from "./fallback";
@@ -56,15 +56,24 @@ export async function runTurn(
     .single();
 
   const p = personality || DEFAULT_PERSONALITY;
-  const providerName = (p.default_provider || DEFAULT_PERSONALITY.default_provider) as "anthropic" | "openai" | "google" | "xai";
+  const requestedProvider = (p.default_provider || DEFAULT_PERSONALITY.default_provider) as ProviderName;
   const model = p.default_model || DEFAULT_PERSONALITY.default_model;
 
   // Gate: resolve account — soft mode for boardroom (ambient, should soft-handover)
-  const resolved = await resolveAccount({ provider: providerName, purpose: "chat", strict: false });
+  const resolved = await resolveAccount({ provider: requestedProvider, purpose: "chat", strict: false });
   if (!resolved.ok) {
     opts.emit({ event: "error", data: { message: `No enabled account available. Open Settings → Accounts.` } });
     throw new Error("no_enabled_account");
   }
+
+  const effectiveProvider = resolved.auth_type === "station_proxy"
+    ? "station_proxy"
+    : (resolved.account.provider as ProviderName);
+
+  // For station_proxy: pass the personality's requested provider so proxy routes correctly
+  const targetProvider = effectiveProvider === "station_proxy"
+    ? (requestedProvider === "station_proxy" ? (p.default_provider || "anthropic") : requestedProvider)
+    : requestedProvider;
 
   const messages: Array<{ role: "user" | "assistant" | "system"; content: string }> = [];
   messages.push({ role: "user", content: `Topic: ${thread.topic}` });
@@ -80,18 +89,26 @@ export async function runTurn(
 
   const systemPrompt = `${p.system_prompt}\n\nBoardroom context: topic="${thread.topic}". Turn mode: ${turnMode}. Speak as ${p.name}. If you have nothing meaningful to add, respond with exactly [SILENCE] and nothing else.`;
 
-  const streamInput = { messages, system: systemPrompt, model };
+  const streamInput = {
+    messages,
+    system: systemPrompt,
+    model,
+    // Extra fields for StationProxyProvider — ignored by direct providers
+    provider: targetProvider,
+    provider_model: model,
+    personality: p.slug,
+  };
 
-  // Use chain-retry if we have a fallback chain
+  // Unified streaming — station_proxy is now a proper LLMProvider in getProvider()
   const llmStream = resolved.fallback_chain.length > 0
     ? streamWithChainRetry({
         primary: resolved.account,
         primaryCredential: resolved.credential,
         fallbackChain: resolved.fallback_chain,
         streamInput,
-        originalProvider: providerName,
+        originalProvider: requestedProvider,
       })
-    : getProvider(resolved.account.provider as "anthropic" | "openai" | "google" | "xai", resolved.credential).stream(streamInput);
+    : getProvider(effectiveProvider, resolved.credential).stream(streamInput);
 
   let fullContent = "";
   let silent = false;
@@ -131,11 +148,11 @@ export async function runTurn(
     .insert({
       thread_id: threadId,
       seat_personality: nextSeat,
-      seat_provider: providerName,
+      seat_provider: effectiveProvider,
       turn_index: turnIndex,
       content: silent ? "" : fullContent,
       silence: silent,
-      provider: providerName,
+      provider: effectiveProvider,
       model,
       tokens_in: tokensIn,
       tokens_out: tokensOut,

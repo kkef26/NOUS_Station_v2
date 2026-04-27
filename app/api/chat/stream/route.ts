@@ -69,68 +69,32 @@ export async function POST(req: NextRequest) {
     if (data) personality = data;
   }
 
-  const providerName = (providerOverride || personality.default_provider) as ProviderName;
-  const modelName = modelOverride || personality.default_model;
+  // Determine the requested provider/model from override or personality defaults
+  const requestedProvider = (providerOverride || personality.default_provider) as ProviderName;
+  const requestedModel = modelOverride || personality.default_model;
 
   // Gate: resolve account with strict/soft mode
   const resolved = await resolveAccount({
-    provider: providerName === "station_proxy" ? "station_proxy" : providerName,
+    provider: requestedProvider === "station_proxy" ? "station_proxy" : requestedProvider,
     purpose: "chat",
     strict,
   });
 
   if (!resolved.ok) {
-    // In strict mode, return 503 naming the originally-requested provider
-    return GATE_BLOCKED(providerName);
+    return GATE_BLOCKED(requestedProvider);
   }
 
   const credential = resolved.credential;
-  const effectiveProvider = resolved.auth_type === "station_proxy" ? "station_proxy" : (resolved.account.provider as ProviderName);
+  const effectiveProvider = resolved.auth_type === "station_proxy"
+    ? "station_proxy"
+    : (resolved.account.provider as ProviderName);
 
-  // Station proxy routing: forward entire request to the proxy
-  if (effectiveProvider === "station_proxy") {
-    const proxyUrl = process.env.STATION_PROXY_URL || "http://54.86.33.89:3001";
-    try {
-      const proxyResp = await fetch(`${proxyUrl}/chat/stream`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-station-secret": process.env.STATION_PROXY_SHARED_SECRET || "",
-        },
-        body: JSON.stringify({ message, personality: personalitySlug, model: modelName }),
-      });
-      if (!proxyResp.ok || !proxyResp.body) {
-        // If proxy fails and we have a fallback chain, try next
-        if (resolved.fallback_chain.length > 0) {
-          return handleStreamWithFallback(
-            resolved.fallback_chain,
-            { messages: [{ role: "user" as const, content: message }], system: personality.system_prompt, model: modelName },
-            providerName,
-            db, threadId, workspaceId, personality, message, modelName
-          );
-        }
-        return GATE_BLOCKED("station_proxy");
-      }
-      return new Response(proxyResp.body, {
-        headers: {
-          "Content-Type": "text/event-stream",
-          "Cache-Control": "no-cache, no-transform",
-          "X-Accel-Buffering": "no",
-          Connection: "keep-alive",
-        },
-      });
-    } catch {
-      if (resolved.fallback_chain.length > 0) {
-        return handleStreamWithFallback(
-          resolved.fallback_chain,
-          { messages: [{ role: "user" as const, content: message }], system: personality.system_prompt, model: modelName },
-          providerName,
-          db, threadId, workspaceId, personality, message, modelName
-        );
-      }
-      return GATE_BLOCKED("station_proxy");
-    }
-  }
+  // Determine what to pass to the provider's stream()
+  // For station_proxy: we pass the originally-requested provider so the proxy routes correctly.
+  // For direct providers: provider/provider_model are ignored by their stream() implementation.
+  const targetProvider = requestedProvider === "station_proxy"
+    ? (personality.default_provider || "anthropic")
+    : requestedProvider;
 
   const encoder = new TextEncoder();
 
@@ -197,17 +161,21 @@ export async function POST(req: NextRequest) {
         const streamInput = {
           messages,
           system: personality.system_prompt,
-          model: modelName,
+          model: requestedModel,
+          // Extra fields used by StationProxyProvider, ignored by direct providers
+          provider: targetProvider,
+          provider_model: requestedModel,
+          personality: personality.slug,
         };
 
-        // Use chain-retry if we have a fallback chain
+        // Unified streaming path — station_proxy is now a proper LLMProvider
         const llmStream = resolved.fallback_chain.length > 0
           ? streamWithChainRetry({
               primary: resolved.account,
               primaryCredential: credential,
               fallbackChain: resolved.fallback_chain,
               streamInput,
-              originalProvider: providerName,
+              originalProvider: requestedProvider,
             })
           : getProvider(effectiveProvider, credential).stream(streamInput);
 
@@ -234,8 +202,8 @@ export async function POST(req: NextRequest) {
             workspace_id: workspaceId,
             role: "assistant",
             content: fullContent,
-            provider: providerName,
-            model: modelName,
+            provider: effectiveProvider,
+            model: requestedModel,
             personality: personality.slug,
             tokens_in: tokensIn,
             tokens_out: tokensOut,
@@ -286,95 +254,4 @@ export async function POST(req: NextRequest) {
       Connection: "keep-alive",
     },
   });
-}
-
-/** Handle streaming with fallback when station_proxy fails */
-async function handleStreamWithFallback(
-  fallbackChain: import("@/lib/accounts/resolve").Account[],
-  streamInput: { messages: Array<{ role: "user" | "assistant" | "system"; content: string }>; system?: string; model: string },
-  originalProvider: string,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  db: any,
-  threadId: string | undefined,
-  workspaceId: string | null,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  personality: any,
-  message: string,
-  modelName: string
-): Promise<Response> {
-  // Try the first fallback account directly
-  const fallback = fallbackChain[0];
-  const credential = resolveChainCredential(fallback);
-  const providerName = fallback.provider as ProviderName;
-
-  try {
-    const llm = getProvider(providerName, credential);
-    const encoder = new TextEncoder();
-
-    const stream = new ReadableStream({
-      async start(controller) {
-        function send(event: string, data: unknown) {
-          controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
-        }
-
-        try {
-          let fullContent = "";
-          let tokensIn = 0;
-          let tokensOut = 0;
-          let latencyMs = 0;
-
-          for await (const chunk of llm.stream(streamInput)) {
-            if (chunk.type === "token") {
-              fullContent += chunk.data;
-              send("token", chunk.data);
-            } else if (chunk.type === "done") {
-              tokensIn = chunk.data.tokens_in;
-              tokensOut = chunk.data.tokens_out;
-              latencyMs = chunk.data.latency_ms;
-            } else if (chunk.type === "error") {
-              send("error", { message: chunk.data.message, retryable: false });
-              controller.close();
-              return;
-            }
-          }
-
-          send("done", { tokens_in: tokensIn, tokens_out: tokensOut, latency_ms: latencyMs });
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          send("error", { message: msg, retryable: false });
-        } finally {
-          controller.close();
-        }
-      },
-    });
-
-    // Log fallback_fire
-    await db.from("account_usage_events").insert({
-      event_type: "fallback_fire",
-      detail: {
-        to_account_id: fallback.id,
-        reason: "station_proxy_failure",
-        original_provider: originalProvider,
-      },
-    });
-
-    return new Response(stream, {
-      headers: {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache, no-transform",
-        "X-Accel-Buffering": "no",
-        Connection: "keep-alive",
-      },
-    });
-  } catch {
-    return new Response(
-      JSON.stringify({
-        error: "provider_not_configured",
-        provider: originalProvider,
-        message: `No enabled ${originalProvider} account. Open Settings → Accounts to configure one.`,
-        link: "/settings/accounts",
-      }),
-      { status: 503, headers: { "Content-Type": "application/json" } }
-    );
-  }
 }
