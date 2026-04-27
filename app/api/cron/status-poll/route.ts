@@ -1,3 +1,4 @@
+export const dynamic = "force-dynamic";
 /**
  * /api/cron/status-poll — Provider statuspage polling cron route
  * Purpose: Poll all provider statuspages every 2min, detect outages, flip account status

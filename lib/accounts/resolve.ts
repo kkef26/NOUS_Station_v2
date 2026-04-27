@@ -35,7 +35,7 @@ export type Account = {
 };
 
 export type ResolveInput = {
-  provider?: "anthropic" | "openai" | "google" | "xai" | "station_proxy" | "auto";
+  provider?: "anthropic" | "openai" | "google" | "xai" | "deepseek" | "station_proxy" | "auto";
   purpose?: string;
   tier?: "senior" | "mid" | "junior";
   strict?: boolean;
