@@ -19,6 +19,43 @@ const SLASH_COMMANDS = [
   { command: "/boardroom", description: "Open boardroom with topic" },
 ];
 
+/* ── List helpers ─────────────────────────────────────────────── */
+
+const LIST_RE = /^(\s*)((\d+)\.|([*\-]))\s/;
+
+function getLineAt(text: string, pos: number) {
+  const before = text.slice(0, pos);
+  const lineStart = before.lastIndexOf("\n") + 1;
+  const lineEnd = text.indexOf("\n", pos);
+  return {
+    lineStart,
+    lineEnd: lineEnd === -1 ? text.length : lineEnd,
+    line: text.slice(lineStart, lineEnd === -1 ? text.length : lineEnd),
+  };
+}
+
+function nextListPrefix(line: string): string | null {
+  const m = line.match(LIST_RE);
+  if (!m) return null;
+  const indent = m[1];
+  if (m[3]) {
+    // numbered: increment
+    return `${indent}${parseInt(m[3], 10) + 1}. `;
+  }
+  // bullet
+  return `${indent}${m[4]} `;
+}
+
+function isEmptyListItem(line: string): boolean {
+  const m = line.match(LIST_RE);
+  if (!m) return false;
+  // After the prefix, nothing but whitespace
+  const rest = line.slice(m[0].length);
+  return rest.trim() === "";
+}
+
+/* ── Component ────────────────────────────────────────────────── */
+
 export function HybridComposer({
   onSend,
   onNewThread,
@@ -62,31 +99,100 @@ export function HybridComposer({
     }
   }, []);
 
+  /* ── Programmatic textarea splice (preserves cursor) ──────── */
+  const splice = useCallback(
+    (start: number, end: number, insert: string) => {
+      const ta = textareaRef.current;
+      if (!ta) return;
+      const next = value.slice(0, start) + insert + value.slice(end);
+      setValue(next);
+      requestAnimationFrame(() => {
+        const cursor = start + insert.length;
+        ta.selectionStart = ta.selectionEnd = cursor;
+        ta.focus();
+      });
+    },
+    [value]
+  );
+
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
-      // ⌘↵ or Ctrl+↵ to send
+      const ta = textareaRef.current;
+      if (!ta) return;
+      const pos = ta.selectionStart;
+
+      /* ── Enter (no modifier) → SEND ──────────────────────── */
+      if (e.key === "Enter" && !e.shiftKey && !e.metaKey && !e.ctrlKey) {
+        // Slash commands: execute instead of send
+        if (value.startsWith("/")) {
+          e.preventDefault();
+          executeSlashCommand(value);
+          return;
+        }
+        e.preventDefault();
+        handleSend();
+        return;
+      }
+
+      /* ── ⌘↵ / Ctrl+↵ → also send (power-user shortcut) ── */
       if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
         handleSend();
         return;
       }
 
-      // ⌘⇧↵ to fork
+      /* ── ⌘⇧↵ → fork thread ─────────────────────────────── */
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === "Enter") {
         e.preventDefault();
-        // Fork: signal parent to create new thread with context
         if (onNewThread) onNewThread();
         return;
       }
 
-      // Enter for slash commands
-      if (e.key === "Enter" && !e.shiftKey && value.startsWith("/")) {
+      /* ── Shift+Enter → newline + auto-continue lists ────── */
+      if (e.key === "Enter" && e.shiftKey) {
         e.preventDefault();
-        executeSlashCommand(value);
+        const { line, lineEnd } = getLineAt(value, pos);
+
+        // If current line is an empty list item, break out of the list
+        if (isEmptyListItem(line)) {
+          const { lineStart } = getLineAt(value, pos);
+          splice(lineStart, lineEnd, "");
+          return;
+        }
+
+        // Auto-continue numbered/bullet list
+        const prefix = nextListPrefix(line);
+        if (prefix && pos >= lineEnd - 1) {
+          // Cursor at or near end of line — continue list
+          splice(pos, pos, "\n" + prefix);
+        } else {
+          // No list context or cursor mid-line — plain newline
+          splice(pos, pos, "\n");
+        }
+        return;
+      }
+
+      /* ── Tab → indent current line ──────────────────────── */
+      if (e.key === "Tab" && !e.shiftKey) {
+        e.preventDefault();
+        const { lineStart } = getLineAt(value, pos);
+        splice(lineStart, lineStart, "  ");
+        return;
+      }
+
+      /* ── Shift+Tab → unindent current line ──────────────── */
+      if (e.key === "Tab" && e.shiftKey) {
+        e.preventDefault();
+        const { lineStart, line } = getLineAt(value, pos);
+        if (line.startsWith("  ")) {
+          splice(lineStart, lineStart + 2, "");
+        } else if (line.startsWith("\t")) {
+          splice(lineStart, lineStart + 1, "");
+        }
         return;
       }
     },
-    [value] // eslint-disable-line react-hooks/exhaustive-deps
+    [value, splice] // eslint-disable-line react-hooks/exhaustive-deps
   );
 
   const handleSend = useCallback(() => {
@@ -110,7 +216,7 @@ export function HybridComposer({
         case "/recall": {
           if (!args) return;
           try {
-            const resp = await fetch(`/api/recall?q=${encodeURIComponent(args)}`);
+            const resp = await fetch(\`/api/recall?q=\${encodeURIComponent(args)}\`);
             const data = await resp.json();
             const memories = (data.memories || []).slice(0, 5);
             setRecallCards(memories);
@@ -123,7 +229,7 @@ export function HybridComposer({
         case "/personality": {
           if (!args) return;
           try {
-            const resp = await fetch(`/api/recall?q=personality+${encodeURIComponent(args)}`);
+            const resp = await fetch(\`/api/recall?q=personality+\${encodeURIComponent(args)}\`);
             // Just set the personality badge — validation happens on send
             setPersonalityBadge(args.trim());
             useChatStore.getState().setActivePersonality(args.trim());
@@ -140,14 +246,12 @@ export function HybridComposer({
         }
         case "/boardroom": {
           if (args) {
-            window.location.href = `/boardroom?topic=${encodeURIComponent(args)}`;
+            window.location.href = \`/boardroom?topic=\${encodeURIComponent(args)}\`;
           }
           setValue("");
           break;
         }
         case "/dispatch": {
-          // For dispatch, we just signal — the dispatch modal is handled by the parent
-          // For now, just redirect to a dispatch flow
           if (args) {
             try {
               const resp = await fetch("/api/dispatch", {
@@ -163,7 +267,7 @@ export function HybridComposer({
               });
               const data = await resp.json();
               if (data.dispatch_id) {
-                alert(`Dispatched → ${data.dispatch_id.slice(0, 8)}`);
+                alert(\`Dispatched → \${data.dispatch_id.slice(0, 8)}\`);
               }
             } catch {
               // ignore
@@ -206,7 +310,7 @@ export function HybridComposer({
 
   return (
     <div
-      className={`w-full ${isSheet ? "" : "border-t"}`}
+      className={\`w-full \${isSheet ? "" : "border-t"}\`}
       style={{ borderColor: "var(--bg-2)" }}
       onDrop={handleDrop}
       onDragOver={(e) => e.preventDefault()}
@@ -306,8 +410,15 @@ export function HybridComposer({
         </div>
       )}
 
+      {/* Keyboard hint */}
+      <div className="px-3 pt-1 flex gap-3">
+        <span className="text-[10px]" style={{ color: "var(--ink-1)", opacity: 0.5 }}>
+          Enter to send · Shift+Enter new line · Tab indent · Shift+Tab unindent
+        </span>
+      </div>
+
       {/* Input area */}
-      <div className="flex items-end gap-2 p-3">
+      <div className="flex items-end gap-2 p-3 pt-1">
         {/* Paperclip */}
         <button
           onClick={() => {
@@ -362,20 +473,21 @@ export function HybridComposer({
           onKeyDown={handleKeyDown}
           placeholder="Message NOUS... (/ for commands)"
           rows={1}
-          className="flex-1 resize-none rounded-lg px-3 py-2 text-sm outline-none"
+          className="flex-1 resize-none rounded-lg px-3 py-2 text-sm outline-none font-mono"
           style={{
             background: "var(--bg-2)",
             color: "var(--ink-0)",
             maxHeight: "192px",
+            tabSize: 2,
           }}
         />
 
         <button
           onClick={handleSend}
           disabled={isStreaming || !value.trim()}
-          className={`shrink-0 w-8 h-8 flex items-center justify-center rounded-lg transition-opacity ${
+          className={\`shrink-0 w-8 h-8 flex items-center justify-center rounded-lg transition-opacity \${
             !value.trim() ? "breathing" : ""
-          }`}
+          }\`}
           style={{
             background: "var(--accent-teal)",
             color: "var(--bg-0)",
