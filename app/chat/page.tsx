@@ -7,6 +7,14 @@ import { HybridComposer } from "@/components/HybridComposer";
 import { ChatMessage } from "@/components/ChatMessage";
 import { useChatStore } from "@/lib/store/chat";
 
+const PROVIDERS = [
+  { id: "anthropic", label: "Claude", model: "sonnet", color: "#cc785c" },
+  { id: "openai", label: "ChatGPT", model: "gpt-4o", color: "#74aa9c" },
+  { id: "google", label: "Gemini", model: "gemini-2.5-flash", color: "#4285f4" },
+  { id: "xai", label: "Grok", model: "grok-3", color: "#e4e4e4" },
+  { id: "deepseek", label: "DeepSeek", model: "deepseek-chat", color: "#5b6ee1" },
+] as const;
+
 interface Thread {
   id: string;
   title: string | null;
@@ -59,6 +67,7 @@ function ChatPageInner() {
 
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [isMobile, setIsMobile] = useState(false);
+  const [selectedProvider, setSelectedProvider] = useState("anthropic");
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Responsive sidebar
@@ -157,6 +166,8 @@ function ChatPageInner() {
     async (message: string, opts?: { personality?: string }) => {
       if (isStreaming) return;
 
+      const provider = PROVIDERS.find((p) => p.id === selectedProvider) || PROVIDERS[0];
+
       // Optimistic user message
       const tempUserMsg: Message = {
         id: `temp-${Date.now()}`,
@@ -176,6 +187,8 @@ function ChatPageInner() {
             thread_id: activeThreadId || undefined,
             message,
             personality: opts?.personality,
+            provider: provider.id,
+            model: provider.model,
           }),
         });
 
@@ -235,6 +248,8 @@ function ChatPageInner() {
             thread_id: newThreadId || "",
             role: "assistant",
             content: streamContent,
+            provider: provider.id,
+            model: provider.model,
             created_at: new Date().toISOString(),
           });
         }
@@ -252,6 +267,7 @@ function ChatPageInner() {
     [
       activeThreadId,
       isStreaming,
+      selectedProvider,
       addMessage,
       setStreaming,
       appendStreamContent,
@@ -260,6 +276,8 @@ function ChatPageInner() {
       router,
     ]
   );
+
+  const activeProviderInfo = PROVIDERS.find((p) => p.id === selectedProvider) || PROVIDERS[0];
 
   return (
     <DeckShell surfaceLabel="Chat">
@@ -319,6 +337,35 @@ function ChatPageInner() {
 
         {/* Center column */}
         <div className="flex-1 flex flex-col min-w-0">
+          {/* Provider selector bar */}
+          <div
+            className="flex items-center gap-1 px-4 py-2 border-b"
+            style={{ borderColor: "var(--bg-2)" }}
+          >
+            {PROVIDERS.map((p) => (
+              <button
+                key={p.id}
+                onClick={() => setSelectedProvider(p.id)}
+                className="px-3 py-1 rounded-full text-xs font-medium transition-all"
+                style={{
+                  background: selectedProvider === p.id ? p.color + "22" : "transparent",
+                  color: selectedProvider === p.id ? p.color : "var(--ink-1)",
+                  border: selectedProvider === p.id
+                    ? `1px solid ${p.color}55`
+                    : "1px solid transparent",
+                }}
+              >
+                {p.label}
+              </button>
+            ))}
+            <span
+              className="ml-auto text-xs"
+              style={{ color: "var(--ink-2)" }}
+            >
+              {activeProviderInfo.model}
+            </span>
+          </div>
+
           {/* Messages */}
           <div className="flex-1 overflow-y-auto p-4">
             {messages.length === 0 && !isStreaming && (
@@ -370,6 +417,7 @@ function ChatPageInner() {
                   id: "streaming",
                   role: "assistant",
                   content: streamingContent,
+                  provider: selectedProvider,
                   created_at: new Date().toISOString(),
                 }}
                 isStreaming
