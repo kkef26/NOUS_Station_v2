@@ -7,6 +7,16 @@ import { streamWithChainRetry } from "@/lib/accounts/chain-retry";
 import { DEFAULT_PERSONALITY } from "@/lib/council/fallback";
 import { emitLevel } from "@/lib/levels/emit";
 
+/** Default model per provider — used when no model override is given */
+const DEFAULT_MODELS: Record<string, string> = {
+  anthropic: "sonnet",
+  openai: "gpt-4o",
+  google: "gemini-2.5-flash",
+  xai: "grok-3",
+  deepseek: "deepseek-chat",
+  station_proxy: "sonnet",
+};
+
 const StreamBody = z.object({
   thread_id: z.string().uuid().optional(),
   message: z.string().min(1),
@@ -49,7 +59,9 @@ export async function POST(req: NextRequest) {
   const db = getServiceClient();
   const workspaceId = req.cookies.get("workspace_id")?.value || null;
 
-  // Resolve personality
+  // ─── Personality is OPTIONAL ───
+  // If a personality slug is provided, look it up. Otherwise use bare defaults.
+  // Provider/model overrides always take precedence over personality defaults.
   let personality = DEFAULT_PERSONALITY;
   if (personalitySlug) {
     const { data } = await db
@@ -59,7 +71,8 @@ export async function POST(req: NextRequest) {
       .eq("active", true)
       .single();
     if (data) personality = data;
-  } else {
+  } else if (!providerOverride) {
+    // No personality AND no provider override — try jarvis as soft default
     const { data } = await db
       .from("personalities")
       .select("*")
@@ -69,9 +82,12 @@ export async function POST(req: NextRequest) {
     if (data) personality = data;
   }
 
-  // Determine the requested provider/model from override or personality defaults
-  const requestedProvider = (providerOverride || personality.default_provider) as ProviderName;
-  const requestedModel = modelOverride || personality.default_model;
+  // Provider/model: explicit overrides > personality defaults > hardcoded defaults
+  const requestedProvider = (providerOverride || personality.default_provider || "anthropic") as ProviderName;
+  const requestedModel = modelOverride || personality.default_model || DEFAULT_MODELS[requestedProvider] || "sonnet";
+
+  // System prompt: personality provides it, or fall back to minimal default
+  const systemPrompt = personality.system_prompt || DEFAULT_PERSONALITY.system_prompt;
 
   // Gate: resolve account with strict/soft mode
   const resolved = await resolveAccount({
@@ -89,12 +105,13 @@ export async function POST(req: NextRequest) {
     ? "station_proxy"
     : (resolved.account.provider as ProviderName);
 
-  // Determine what to pass to the provider's stream()
-  // For station_proxy: we pass the originally-requested provider so the proxy routes correctly.
-  // For direct providers: provider/provider_model are ignored by their stream() implementation.
-  const targetProvider = requestedProvider === "station_proxy"
-    ? (personality.default_provider || "anthropic")
+  // For station_proxy: pass the originally-requested provider so the proxy routes correctly.
+  const targetProvider = effectiveProvider === "station_proxy"
+    ? (requestedProvider === "station_proxy" ? (personality.default_provider || "anthropic") : requestedProvider)
     : requestedProvider;
+
+  // Ensure the model is appropriate for the target provider
+  const targetModel = modelOverride || DEFAULT_MODELS[targetProvider] || requestedModel;
 
   const encoder = new TextEncoder();
 
@@ -160,11 +177,11 @@ export async function POST(req: NextRequest) {
 
         const streamInput = {
           messages,
-          system: personality.system_prompt,
-          model: requestedModel,
+          system: systemPrompt,
+          model: targetModel,
           // Extra fields used by StationProxyProvider, ignored by direct providers
           provider: targetProvider,
-          provider_model: requestedModel,
+          provider_model: targetModel,
           personality: personality.slug,
         };
 
@@ -202,8 +219,8 @@ export async function POST(req: NextRequest) {
             workspace_id: workspaceId,
             role: "assistant",
             content: fullContent,
-            provider: effectiveProvider,
-            model: requestedModel,
+            provider: targetProvider,
+            model: targetModel,
             personality: personality.slug,
             tokens_in: tokensIn,
             tokens_out: tokensOut,
