@@ -4,6 +4,10 @@ import type { LLMProvider, Chunk } from "./types";
  * StationProxyProvider — routes LLM calls through the Station Proxy at EC2.
  * The proxy handles all providers (Anthropic via OAuth, OpenAI/Google/xAI/DeepSeek via API keys).
  * Credential here is the NOUS API key used for x-api-key auth on the proxy.
+ *
+ * SSE format varies by provider:
+ *   Anthropic:     {type:"content", text:"..."} → {type:"done", result:"...", usage:{input_tokens,output_tokens}}
+ *   Non-Anthropic: {type:"content_block_delta", delta:{type:"text_delta", text:"..."}} → {type:"message_stop", usage:{}}
  */
 export class StationProxyProvider implements LLMProvider {
   private apiKey: string;
@@ -27,8 +31,6 @@ export class StationProxyProvider implements LLMProvider {
     let tokensIn = 0;
     let tokensOut = 0;
 
-    // Map the provider/model for the proxy
-    // The proxy expects: provider (anthropic|openai|google|xai|deepseek), provider_model, messages, system
     const proxyProvider = input.provider || "anthropic";
     const proxyModel = input.provider_model || input.model;
 
@@ -79,52 +81,57 @@ export class StationProxyProvider implements LLMProvider {
         buffer = lines.pop() || "";
 
         for (const line of lines) {
-          if (line.startsWith("data: ")) {
-            const data = line.slice(6).trim();
-            if (data === "[DONE]") continue;
+          if (!line.startsWith("data: ")) continue;
+          const data = line.slice(6).trim();
+          if (!data || data === "[DONE]") continue;
 
-            try {
-              const parsed = JSON.parse(data);
-              // The proxy emits SSE frames:
-              //   event: token  data: {"token": "..."} or just the string
-              //   event: done   data: {"tokens_in":N, "tokens_out":N}
-              if (parsed.token !== undefined) {
-                yield { type: "token", data: parsed.token };
-              } else if (parsed.tokens_in !== undefined) {
-                tokensIn = parsed.tokens_in || 0;
-                tokensOut = parsed.tokens_out || 0;
-              } else if (parsed.error) {
-                yield { type: "error", data: { message: parsed.error, retryable: false } };
-                return;
-              }
-            } catch {
-              // Raw string token
-              if (data && data !== "[DONE]") {
-                yield { type: "token", data };
-              }
+          try {
+            const parsed = JSON.parse(data);
+
+            // Anthropic format: {type:"content", text:"..."}
+            if (parsed.type === "content" && typeof parsed.text === "string") {
+              yield { type: "token", data: parsed.text };
             }
-          } else if (line.startsWith("event: ")) {
-            // Track event type for next data line — already handled inline
+            // Non-Anthropic format: {type:"content_block_delta", delta:{type:"text_delta", text:"..."}}
+            else if (parsed.type === "content_block_delta" && parsed.delta?.text) {
+              yield { type: "token", data: parsed.delta.text };
+            }
+            // Anthropic done: {type:"done", result:"...", usage:{input_tokens, output_tokens}}
+            else if (parsed.type === "done" && parsed.usage) {
+              tokensIn = parsed.usage?.input_tokens || 0;
+              tokensOut = parsed.usage?.output_tokens || 0;
+            }
+            // Non-Anthropic done: {type:"message_stop", usage:{}}
+            else if (parsed.type === "message_stop") {
+              // Usage often empty for non-Anthropic — that's fine
+            }
+            // Error from proxy
+            else if (parsed.type === "error") {
+              yield { type: "error", data: { message: parsed.text || parsed.error || "Proxy error", retryable: false } };
+              return;
+            }
+          } catch {
+            // Unparseable line — skip
           }
         }
       }
 
-      // Process any remaining buffer
-      if (buffer.trim()) {
-        if (buffer.startsWith("data: ")) {
-          const data = buffer.slice(6).trim();
-          if (data && data !== "[DONE]") {
-            try {
-              const parsed = JSON.parse(data);
-              if (parsed.token !== undefined) {
-                yield { type: "token", data: parsed.token };
-              } else if (parsed.tokens_in !== undefined) {
-                tokensIn = parsed.tokens_in || 0;
-                tokensOut = parsed.tokens_out || 0;
-              }
-            } catch {
-              // ignore
+      // Drain remaining buffer
+      if (buffer.trim().startsWith("data: ")) {
+        const data = buffer.trim().slice(6).trim();
+        if (data && data !== "[DONE]") {
+          try {
+            const parsed = JSON.parse(data);
+            if (parsed.type === "content" && typeof parsed.text === "string") {
+              yield { type: "token", data: parsed.text };
+            } else if (parsed.type === "content_block_delta" && parsed.delta?.text) {
+              yield { type: "token", data: parsed.delta.text };
+            } else if (parsed.type === "done" && parsed.usage) {
+              tokensIn = parsed.usage?.input_tokens || 0;
+              tokensOut = parsed.usage?.output_tokens || 0;
             }
+          } catch {
+            // ignore
           }
         }
       }
