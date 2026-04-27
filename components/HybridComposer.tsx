@@ -290,7 +290,7 @@ export function HybridComposer({
         case "/recall": {
           if (!args) return;
           try {
-            const resp = await fetch(\`/api/recall?q=\${encodeURIComponent(args)}\`);
+            const resp = await fetch(`/api/recall?q=${encodeURIComponent(args)}`);
             const data = await resp.json();
             const memories = (data.memories || []).slice(0, 5);
             setRecallCards(memories);
@@ -303,7 +303,7 @@ export function HybridComposer({
         case "/personality": {
           if (!args) return;
           try {
-            const resp = await fetch(\`/api/recall?q=personality+\${encodeURIComponent(args)}\`);
+            const resp = await fetch(`/api/recall?q=personality+${encodeURIComponent(args)}`);
             setPersonalityBadge(args.trim());
             useChatStore.getState().setActivePersonality(args.trim());
           } catch {
@@ -319,7 +319,7 @@ export function HybridComposer({
         }
         case "/boardroom": {
           if (args) {
-            window.location.href = \`/boardroom?topic=\${encodeURIComponent(args)}\`;
+            window.location.href = `/boardroom?topic=${encodeURIComponent(args)}`;
           }
           setValue("");
           break;
@@ -340,7 +340,7 @@ export function HybridComposer({
               });
               const data = await resp.json();
               if (data.dispatch_id) {
-                alert(\`Dispatched → \${data.dispatch_id.slice(0, 8)}\`);
+                alert(`Dispatched → ${data.dispatch_id.slice(0, 8)}`);
               }
             } catch {
               // ignore
@@ -383,7 +383,7 @@ export function HybridComposer({
 
   return (
     <div
-      className={\`w-full \${isSheet ? "" : "border-t"}\`}
+      className={`w-full ${isSheet ? "" : "border-t"}`}
       style={{ borderColor: "var(--bg-2)" }}
       onDrop={handleDrop}
       onDragOver={(e) => e.preventDefault()}
@@ -558,9 +558,9 @@ export function HybridComposer({
         <button
           onClick={handleSend}
           disabled={isStreaming || !value.trim()}
-          className={\`shrink-0 w-8 h-8 flex items-center justify-center rounded-lg transition-opacity \${
+          className={`shrink-0 w-8 h-8 flex items-center justify-center rounded-lg transition-opacity ${
             !value.trim() ? "breathing" : ""
-          }\`}
+          }`}
           style={{
             background: "var(--accent-teal)",
             color: "var(--bg-0)",

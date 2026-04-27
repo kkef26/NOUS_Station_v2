@@ -3,7 +3,10 @@ import type { LLMProvider, Chunk } from "./types";
 /**
  * StationProxyProvider — routes LLM calls through the Station Proxy at EC2.
  * The proxy handles all providers (Anthropic via OAuth, OpenAI/Google/xAI/DeepSeek via API keys).
- * Credential here is the NOUS API key used for x-api-key auth on the proxy.
+ *
+ * Credential resolution:
+ *   - If credential is a real API key string, use it directly
+ *   - If credential is "station_proxy" (sentinel from resolveAccount), fall back to env vars
  *
  * SSE format varies by provider:
  *   Anthropic:     {type:"content", text:"..."} → {type:"done", result:"...", usage:{input_tokens,output_tokens}}
@@ -13,8 +16,11 @@ export class StationProxyProvider implements LLMProvider {
   private apiKey: string;
   private proxyUrl: string;
 
-  constructor(apiKey: string) {
-    this.apiKey = apiKey;
+  constructor(credential: string) {
+    // Resolve actual API key: sentinel "station_proxy" means look up from env
+    this.apiKey = credential === "station_proxy"
+      ? (process.env.STATION_PROXY_API_KEY || process.env.NOUS_API_KEY || "")
+      : credential;
     this.proxyUrl = process.env.STATION_PROXY_URL || "http://54.196.89.164:8095";
   }
 
